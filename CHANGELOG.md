@@ -1,46 +1,29 @@
 # Changelog
 
-## 1.2.1 — 2026-08-12
+## 1.2.2 — 2026-08-13
+
+### Fixed
+- Unsupported glyphs are now caught by a Tinos font-coverage preflight before final PDF rendering.
+- Font/preflight errors retain file, discipline, worksheet, cell, source font, code point and cell text when provenance is known.
+- Technical reports retain current-session counts instead of resetting analysis statistics after PDF/font errors.
 
 ### Added
-- Controlled PDF-only normalization of ordinary grade and attestation values.
-- Explicit rules for `н`, `на`, valid grade pairs and deterministic slash constructions such as `10/-`, `-/7`, `нб/5`, `5/нб`, `нб/зрх`.
-- Grouped **Перевірити нестандартні значення** dialog with remove / keep / replace decisions and per-cell locations.
-- Bulk decision actions for equal values and remove/keep review for text found between `Примітки` and the topics table.
-- Analysis metrics for automatic normalizations and cases requiring a decision.
-- 24-test v1.2.1 regression suite and an additional data-loss audit.
-
-### Changed
-- Grade-table text is always rendered black, regardless of Excel font color.
-- In the topics table, red is retained only for numeric source cells in `Кількість годин` that were red in Excel.
-- `Примітки` receives a merged label area; service annotations in the row are preserved and excluded from grade normalization.
-- Empty grade pages containing only the student list are omitted while other discipline content remains.
-- Technical report and UI version updated to 1.2.1.
+- OOXML source-font provenance from cell styles (`<name>`, family, charset, scheme) and rich-text runs (`<rPr>`, `<rFont>`).
+- Dedicated PUA (`U+E000..U+F8FF`) Font / symbol normalization phase.
+- Source-font-specific conservative mapping. There is no global `U+F062 -> β` rule.
+- Review category **Нестандартні символи шрифту** with file/discipline/sheet/cell/font/code-point context and PDF-only replacement controls.
+- PUA audit counters and A-H font/symbol regression cases.
 
 ### Safety
-- All normalization and manual decisions remain in the PDF model only. Source XLSX/XLSM files are never modified.
+- A PUA value is auto-mapped only when the originating font has an explicit verified mapping; unknown or ambiguous mappings require user review.
+- Existing v1.2.1 grade normalization, layout, color, Type A/Type B, privacy and ZIP-safety behavior remains in force.
+
+## 1.2.1 — 2026-08-12
+- Added deterministic PDF-only grade/attestation normalization and grouped manual review.
+- Added `Примітки` handling, inter-table text review, empty grade-page omission and black grade-table policy.
+- Kept red only for red numeric service values in topic-table `Кількість годин`.
+- Added 24-test regression suite and source-to-PDF loss audit.
 
 ## 1.2.0 — 2026-08-12
-
-### Changed
-- Replaced the Python/FastAPI/ReportLab server architecture with a static browser-only application for GitHub Pages.
-- ZIP, XLSX/XLSM analysis and PDF generation now happen locally in browser memory.
-- Grade columns are fixed at 8 mm and are never stretched to fill the page.
-
-### Added
-- Content-based Type A and Type B worksheet detection.
-- Combining grade and topic worksheets from one workbook into one discipline.
-- Safe continuation joining for topic rows with empty date/hours.
-- Preservation of red Excel font marks in PDF.
-- Unicode Tinos embedding in generated PDF.
-- A4 landscape text-based PDF writer with repeatable grade pages and wrapped topic rows.
-- Problem-cell validation with keep / PDF-only replace / PDF-only blank decisions.
-- Web Worker analysis and PDF generation with live progress.
-- Optional neutral waiting messages and technical-report copy action.
-- ZIP path traversal, symlink, size, CRC and suspicious compression-ratio defenses.
-- Automated external-fixture test runner and source-to-PDF render manifest audit.
-
-### Removed
-- FastAPI server runtime.
-- Python workbook/PDF engine.
-- Windows server launcher and Python requirements.
+- Migrated from Python/FastAPI to a browser-only GitHub Pages architecture.
+- Added Type A/Type B content detection, fixed 8 mm grade columns, A4-landscape PDF generation, ZIP safety, Web Worker progress and PDF-only validation decisions.
