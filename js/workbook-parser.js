@@ -1,0 +1,325 @@
+(function (root) {
+  'use strict';
+
+  const { ZipReader } = root.JournalArchive || {};
+  if (!ZipReader) throw new Error('JournalArchive is required before workbook-parser.js');
+
+  const BUILTIN_DATE_FORMATS = new Set([14,15,16,17,18,19,20,21,22,27,30,36,45,46,47,50,57]);
+  const INDEXED_COLORS = [
+    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
+    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
+    '800000','008000','000080','808000','800080','008080','C0C0C0','808080',
+    '9999FF','993366','FFFFCC','CCFFFF','660066','FF8080','0066CC','CCCCFF',
+    '000080','FF00FF','FFFF00','00FFFF','800080','800000','008080','0000FF',
+    '00CCFF','CCFFFF','CCFFCC','FFFF99','99CCFF','FF99CC','CC99FF','FFCC99',
+    '3366FF','33CCCC','99CC00','FFCC00','FF9900','FF6600','666699','969696',
+    '003366','339966','003300','333300','993300','993366','333399','333333'
+  ];
+
+  function xmlDecode(text) {
+    return String(text || '')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)));
+  }
+
+  function xmlText(text) {
+    return xmlDecode(String(text || '').replace(/<[^>]+>/g, ''));
+  }
+
+  function attrs(raw) {
+    const out = {};
+    String(raw || '').replace(/([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g, (_, key, _q, v1, v2) => {
+      out[key] = xmlDecode(v1 !== undefined ? v1 : v2);
+      return '';
+    });
+    return out;
+  }
+
+  function tagBlocks(xml, tag) {
+    const re = new RegExp(`<${tag}\\b([^>]*?)(?:\\/\\s*>|>([\\s\\S]*?)<\\/${tag}>)`, 'gi');
+    const out = [];
+    let m;
+    while ((m = re.exec(xml))) out.push({ attrs: attrs(m[1]), body: m[2] || '', raw: m[0] });
+    return out;
+  }
+
+  function firstTagBody(xml, tag) {
+    const m = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(xml || '');
+    return m ? m[1] : '';
+  }
+
+  function firstTagAttrs(xml, tag) {
+    const m = new RegExp(`<${tag}\\b([^>]*)\\/?(?:>|$)`, 'i').exec(xml || '');
+    return m ? attrs(m[1]) : null;
+  }
+
+  function getTextRuns(containerXml) {
+    const texts = [];
+    const re = /<t\b[^>]*>([\s\S]*?)<\/t>/gi;
+    let m;
+    while ((m = re.exec(containerXml || ''))) texts.push(xmlDecode(m[1]));
+    return texts.join('');
+  }
+
+  function parseSharedStrings(xml) {
+    if (!xml) return [];
+    return tagBlocks(xml, 'si').map((si) => getTextRuns(si.body));
+  }
+
+  function parseTheme(xml) {
+    if (!xml) return [];
+    const scheme = firstTagBody(xml, 'a:clrScheme') || firstTagBody(xml, 'clrScheme');
+    if (!scheme) return [];
+    const order = ['lt1','dk1','lt2','dk2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+    return order.map((name) => {
+      const block = firstTagBody(scheme, `a:${name}`) || firstTagBody(scheme, name);
+      if (!block) return null;
+      const srgb = firstTagAttrs(block, 'a:srgbClr') || firstTagAttrs(block, 'srgbClr');
+      if (srgb && srgb.val) return srgb.val.toUpperCase();
+      const sys = firstTagAttrs(block, 'a:sysClr') || firstTagAttrs(block, 'sysClr');
+      return sys ? String(sys.lastClr || sys.val || '').toUpperCase() : null;
+    });
+  }
+
+  function applyTint(hex, tint) {
+    if (!hex || tint === undefined || tint === null || Number.isNaN(Number(tint))) return hex;
+    const t = Number(tint);
+    const nums = [0,2,4].map((i) => parseInt(hex.slice(i, i+2), 16));
+    const out = nums.map((n) => {
+      const v = t < 0 ? n * (1 + t) : n * (1 - t) + 255 * t;
+      return Math.max(0, Math.min(255, Math.round(v)));
+    });
+    return out.map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase();
+  }
+
+  function colorFromTag(fontXml, themeColors) {
+    const c = firstTagAttrs(fontXml, 'color');
+    if (!c) return '000000';
+    if (c.rgb) return c.rgb.slice(-6).toUpperCase();
+    if (c.indexed !== undefined) return INDEXED_COLORS[Number(c.indexed)] || '000000';
+    if (c.theme !== undefined) return applyTint(themeColors[Number(c.theme)] || '000000', c.tint);
+    if (c.auto === '1' || c.auto === 'true') return '000000';
+    return '000000';
+  }
+
+  function parseStyles(xml, themeColors) {
+    if (!xml) return { styles: [{ fontId: 0, numFmtId: 0 }], fonts: [{ color: '000000' }], numFmts: {} };
+    const numFmts = {};
+    const nfBody = firstTagBody(xml, 'numFmts');
+    if (nfBody) {
+      const re = /<numFmt\b([^>]*)\/?\s*>/gi;
+      let m;
+      while ((m = re.exec(nfBody))) {
+        const a = attrs(m[1]);
+        if (a.numFmtId !== undefined) numFmts[Number(a.numFmtId)] = a.formatCode || '';
+      }
+    }
+    const fontsBody = firstTagBody(xml, 'fonts');
+    const fonts = fontsBody ? tagBlocks(fontsBody, 'font').map((f) => ({
+      color: colorFromTag(f.body, themeColors),
+      bold: /<b(?:\s[^>]*)?\/?\s*>/i.test(f.body),
+      italic: /<i(?:\s[^>]*)?\/?\s*>/i.test(f.body),
+    })) : [{ color: '000000' }];
+    const xfsBody = firstTagBody(xml, 'cellXfs');
+    const styles = [];
+    if (xfsBody) {
+      const re = /<xf\b([^>]*?)(?:\/\s*>|>(?:[\s\S]*?)<\/xf>)/gi;
+      let m;
+      while ((m = re.exec(xfsBody))) {
+        const a = attrs(m[1]);
+        styles.push({ fontId: Number(a.fontId || 0), numFmtId: Number(a.numFmtId || 0) });
+      }
+    }
+    if (!styles.length) styles.push({ fontId: 0, numFmtId: 0 });
+    return { styles, fonts, numFmts };
+  }
+
+  function isDateFormat(numFmtId, code) {
+    if (BUILTIN_DATE_FORMATS.has(Number(numFmtId))) return true;
+    const clean = String(code || '').replace(/"[^"]*"/g, '').replace(/\\./g, '').replace(/\[[^\]]*\]/g, '').toLowerCase();
+    return /[dy]/.test(clean) && /m/.test(clean);
+  }
+
+  function excelSerialToDate(serial, date1904) {
+    const n = Number(serial);
+    if (!Number.isFinite(n)) return null;
+    const epoch = Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30);
+    return new Date(epoch + n * 86400000);
+  }
+
+  function formatExcelDate(serial, formatCode, date1904) {
+    const d = excelSerialToDate(serial, date1904);
+    if (!d || Number.isNaN(d.getTime())) return String(serial);
+    const day = d.getUTCDate();
+    const month = d.getUTCMonth() + 1;
+    const year = d.getUTCFullYear();
+    const two = (n) => String(n).padStart(2, '0');
+    let code = String(formatCode || 'dd.mm.yyyy');
+    if (!code || code === 'General') code = 'dd.mm.yyyy';
+    code = code.replace(/"([^"]*)"/g, '$1').replace(/\\(.)/g, '$1');
+    // The journal formats are date-only. Preserve their punctuation and year width.
+    return code
+      .replace(/yyyy/gi, String(year))
+      .replace(/yy/gi, two(year % 100))
+      .replace(/dd/gi, two(day))
+      .replace(/d/gi, String(day))
+      .replace(/mm/gi, two(month))
+      .replace(/m/gi, String(month))
+      .replace(/;.*$/, '')
+      .trim();
+  }
+
+  function numericText(value) {
+    if (value === '' || value === null || value === undefined) return '';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value || '');
+    if (Math.abs(n - Math.round(n)) < 1e-12) return String(Math.round(n));
+    return String(n);
+  }
+
+  function columnNumber(ref) {
+    const m = /^([A-Z]+)\d+$/i.exec(ref || '');
+    if (!m) return null;
+    let n = 0;
+    for (const ch of m[1].toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n;
+  }
+
+  function rowNumber(ref) {
+    const m = /^(?:[A-Z]+)(\d+)$/i.exec(ref || '');
+    return m ? Number(m[1]) : null;
+  }
+
+  function parseCellXml(rawAttrs, body, sharedStrings, styleInfo, date1904) {
+    const a = attrs(rawAttrs);
+    const ref = a.r || '';
+    const styleIndex = Number(a.s || 0);
+    const style = styleInfo.styles[styleIndex] || styleInfo.styles[0] || { fontId: 0, numFmtId: 0 };
+    const font = styleInfo.fonts[style.fontId] || styleInfo.fonts[0] || { color: '000000' };
+    const t = a.t || 'n';
+    const fBody = firstTagBody(body, 'f');
+    const formula = fBody ? xmlDecode(fBody) : '';
+    const vBody = firstTagBody(body, 'v');
+    let rawValue = vBody ? xmlDecode(vBody) : '';
+    let display = '';
+    if (t === 's') display = sharedStrings[Number(rawValue)] ?? '';
+    else if (t === 'inlineStr') display = getTextRuns(firstTagBody(body, 'is'));
+    else if (t === 'str') display = rawValue;
+    else if (t === 'b') display = rawValue === '1' ? 'TRUE' : 'FALSE';
+    else if (t === 'e') display = rawValue;
+    else if (t === 'd') display = rawValue;
+    else {
+      const fmtCode = styleInfo.numFmts[style.numFmtId] || '';
+      display = isDateFormat(style.numFmtId, fmtCode) && rawValue !== '' ? formatExcelDate(rawValue, fmtCode, date1904) : numericText(rawValue);
+    }
+    if (formula && !vBody) display = `=${formula}`;
+    return {
+      ref,
+      row: rowNumber(ref),
+      col: columnNumber(ref),
+      styleIndex,
+      fontColor: (font.color || '000000').toUpperCase(),
+      bold: Boolean(font.bold),
+      italic: Boolean(font.italic),
+      type: t,
+      formula,
+      rawValue,
+      value: display,
+      isError: t === 'e' || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|GETTING_DATA)$/i.test(display),
+      hasCachedFormulaResult: Boolean(formula && vBody),
+    };
+  }
+
+  function parseSheet(xml, sharedStrings, styleInfo, date1904) {
+    const rows = new Map();
+    const cells = new Map();
+    const re = /<c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/c>)/gi;
+    let m;
+    while ((m = re.exec(xml))) {
+      const cell = parseCellXml(m[1], m[2] || '', sharedStrings, styleInfo, date1904);
+      if (!cell.ref || !cell.row || !cell.col) continue;
+      cells.set(cell.ref, cell);
+      if (!rows.has(cell.row)) rows.set(cell.row, new Map());
+      rows.get(cell.row).set(cell.col, cell);
+    }
+    return {
+      rows,
+      cells,
+      maxRow: Math.max(0, ...rows.keys()),
+      maxCol: Math.max(0, ...Array.from(cells.values()).map((c) => c.col || 0)),
+      getCell(row, col) { return rows.get(row)?.get(col) || null; },
+    };
+  }
+
+  function normalizeTarget(target) {
+    const t = String(target || '').replace(/\\/g, '/');
+    const parts = [];
+    for (const p of (`xl/${t}`).split('/')) {
+      if (!p || p === '.') continue;
+      if (p === '..') parts.pop(); else parts.push(p);
+    }
+    return parts.join('/');
+  }
+
+  async function getText(zip, name, optional = false) {
+    const entry = zip.entries.find((e) => e.name === name);
+    if (!entry) {
+      if (optional) return '';
+      throw new Error(`XLSX пошкоджений: відсутній ${name}`);
+    }
+    const bytes = await zip.readEntry(entry);
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  }
+
+  async function parseWorkbook(arrayBuffer, displayFile) {
+    const zip = new ZipReader(arrayBuffer, {
+      maxEntries: 2500,
+      maxTotalUncompressed: 120 * 1024 * 1024,
+      maxEntryUncompressed: 80 * 1024 * 1024,
+      maxCompressionRatio: 300,
+      maxArchiveBytes: 55 * 1024 * 1024,
+    });
+    const workbookXml = await getText(zip, 'xl/workbook.xml');
+    const relsXml = await getText(zip, 'xl/_rels/workbook.xml.rels');
+    const sharedXml = await getText(zip, 'xl/sharedStrings.xml', true);
+    const stylesXml = await getText(zip, 'xl/styles.xml', true);
+    const themeXml = await getText(zip, 'xl/theme/theme1.xml', true);
+    const sharedStrings = parseSharedStrings(sharedXml);
+    const themeColors = parseTheme(themeXml);
+    const styleInfo = parseStyles(stylesXml, themeColors);
+    const wbPr = firstTagAttrs(workbookXml, 'workbookPr') || {};
+    const date1904 = wbPr.date1904 === '1' || wbPr.date1904 === 'true';
+
+    const relMap = {};
+    const relRe = /<Relationship\b([^>]*)\/?\s*>/gi;
+    let rm;
+    while ((rm = relRe.exec(relsXml))) {
+      const a = attrs(rm[1]);
+      if (a.Id && a.Target) relMap[a.Id] = normalizeTarget(a.Target);
+    }
+    const sheets = [];
+    const sheetRe = /<sheet\b([^>]*)\/?\s*>/gi;
+    let sm;
+    while ((sm = sheetRe.exec(workbookXml))) {
+      const a = attrs(sm[1]);
+      const relId = a['r:id'];
+      if (!relId || !relMap[relId]) continue;
+      const xml = await getText(zip, relMap[relId]);
+      sheets.push({
+        name: a.name || `Sheet${sheets.length + 1}`,
+        path: relMap[relId],
+        ...parseSheet(xml, sharedStrings, styleInfo, date1904),
+      });
+    }
+    if (!sheets.length) throw new Error('XLSX не містить доступних аркушів.');
+    return { displayFile, sheets, styleInfo, date1904 };
+  }
+
+  root.JournalWorkbook = {
+    parseWorkbook, xmlDecode, attrs, columnNumber, rowNumber, numericText,
+    isDateFormat, formatExcelDate,
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = root.JournalWorkbook;
+})(typeof globalThis !== 'undefined' ? globalThis : self);
