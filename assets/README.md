@@ -1,6 +1,6 @@
 # Assets
 
-Journal PDF v1.2.0 intentionally contains no test journals and no generated PDFs.
+Journal PDF v1.2.1 intentionally contains no test journals and no generated PDFs.
 
 For a fully same-origin/offline font setup, the repository maintainer may place a legally obtained copy of **Tinos-Regular.ttf** here as:
 

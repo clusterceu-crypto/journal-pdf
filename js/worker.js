@@ -1,7 +1,7 @@
 'use strict';
-importScripts('archive.js', 'workbook-parser.js', 'journal-parser.js', 'validation.js', 'pdf-generator.js');
+importScripts('archive.js', 'workbook-parser.js', 'validation.js', 'journal-parser.js', 'pdf-generator.js');
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 let currentDisciplines = [];
 let currentWarnings = [];
 let currentGroup = 'Група';
@@ -26,6 +26,17 @@ function deriveGroup(files) {
     if (parts.length > 1) return parts[0];
   }
   return 'Група';
+}
+function aggregateStats() {
+  return {
+    selectedSourceCells: currentDisciplines.reduce((n, d) => n + (d.stats?.selectedSourceCells || 0), 0),
+    redSourceCells: currentDisciplines.reduce((n, d) => n + (d.stats?.redSourceCells || 0), 0),
+    topicContinuationsMerged: currentDisciplines.reduce((n, d) => n + (d.stats?.topicContinuationsMerged || 0), 0),
+    autoNormalizations: currentDisciplines.reduce((n, d) => n + (d.stats?.autoNormalizations || 0), 0),
+    decisionRequired: currentWarnings.filter((w) => w.requiresDecision).length,
+    structureWarnings: currentWarnings.filter((w) => !w.requiresDecision).length,
+    emptyGradePagesSkipped: currentDisciplines.filter((d) => d.stats?.emptyGradePageSkippedCandidate).length,
+  };
 }
 
 async function analyzeArchive(buffer, zipName) {
@@ -56,11 +67,17 @@ async function analyzeArchive(buffer, zipName) {
       currentWarnings.push(...result.warnings);
     } catch (error) {
       currentWarnings.push({
-        id: `${file}|||workbook`, kind: 'workbook', file, sheet: '', cell: '', original: '',
+        id: `${file}|||workbook`, kind: 'workbook', category: 'structure', groupKey: `workbook|${file}`,
+        file, subject: '', sheet: '', cell: '', original: '',
         message: `Не вдалося однозначно прочитати журнал: ${error.message || error}`,
-        correctable: false, technical: String(error?.stack || error),
+        correctable: false, requiresDecision: false, technical: String(error?.stack || error),
       });
     }
+    post('phase', {
+      stage: 'analysis', state: 'running', current: i + 1, total: files.length,
+      percent: Math.round(((i + 1) / files.length) * 100), item: file,
+      message: `Перевірено ${i + 1} з ${files.length}`,
+    });
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
@@ -73,16 +90,14 @@ async function analyzeArchive(buffer, zipName) {
     subjectsCount: currentDisciplines.length,
     subjects: currentDisciplines.map((d) => ({ subject: d.subject, type: d.type, file: d.file })),
     warnings: currentWarnings,
-    stats: {
-      selectedSourceCells: currentDisciplines.reduce((n, d) => n + (d.stats?.selectedSourceCells || 0), 0),
-      redSourceCells: currentDisciplines.reduce((n, d) => n + (d.stats?.redSourceCells || 0), 0),
-      topicContinuationsMerged: currentDisciplines.reduce((n, d) => n + (d.stats?.topicContinuationsMerged || 0), 0),
-    },
+    stats: aggregateStats(),
   });
 }
 
 async function generate(overrides) {
   if (!currentDisciplines.length) throw new Error('Спочатку відкрийте та перевірте архів журналів.');
+  const unresolved = currentWarnings.filter((w) => w.requiresDecision && !Object.prototype.hasOwnProperty.call(overrides || {}, w.id));
+  if (unresolved.length) throw new Error(`Залишилося ${unresolved.length} нестандартних значень без рішення користувача.`);
   post('phase', { stage: 'pdf', state: 'running', current: 0, total: currentDisciplines.length, percent: 0, item: '', message: 'Готую PDF…' });
   const result = await JournalPdf.generatePdf(currentDisciplines, overrides || {}, {
     group: currentGroup,
@@ -101,7 +116,8 @@ async function generate(overrides) {
     byteLength: result.bytes.byteLength,
     audit: {
       renderedSourceCells: result.renderedSourceKeys.length,
-      renderedRedSourceCells: result.renderedRedSourceKeys.length,
+      renderedRedHourCells: result.renderedRedSourceKeys.length,
+      emptyGradePagesSkipped: result.emptyGradePagesSkipped || 0,
     },
     buffer: result.bytes.buffer,
   }, [result.bytes.buffer]);

@@ -1,6 +1,9 @@
 (function (root) {
   'use strict';
 
+  const Validation = root.JournalValidation;
+  if (!Validation) throw new Error('JournalValidation is required before journal-parser.js');
+
   function text(v) { return v === null || v === undefined ? '' : String(v); }
   function norm(v) { return text(v).replace(/\s+/g, ' ').trim().toLocaleLowerCase('uk-UA'); }
   function nonempty(v) { return text(v).trim() !== ''; }
@@ -127,43 +130,39 @@
     return best;
   }
 
+  function rowHasNotesLabel(sheet, row, dateCol) {
+    for (let c = 1; c <= Math.max(2, dateCol); c += 1) if (norm(value(sheet, row, c)).startsWith('приміт')) return true;
+    return false;
+  }
+  function buildAuxRow(file, sheet, row, dateCol, gradeCols, isNotesRow = false) {
+    const prefix = []; for (let c = 1; c <= dateCol; c += 1) prefix.push(modelCell(file, sheet.name, getCell(sheet, row, c)));
+    return { sourceRow: row, isNotesRow, label: combineCells(prefix, ' '), marks: gradeCols.map((c) => modelCell(file, sheet.name, getCell(sheet, row, c))) };
+  }
+
   function buildGradeModel(workbook, sheet, info) {
     const file = workbook.displayFile;
     const lastStudent = Math.max(...info.rows);
     const topicHeader = detectTopicHeader(sheet);
-    const stop = topicHeader ? topicHeader.row : Math.min(lastStudent + 12, sheet.maxRow);
-    const noteRows = [];
+    const stop = topicHeader ? topicHeader.row : Math.min(lastStudent + 12, sheet.maxRow + 1);
+    const candidateRows = [];
     for (let r = lastStudent + 1; r < stop; r += 1) {
-      let any = false;
-      for (let c = 1; c <= Math.min(sheet.maxCol, 180); c += 1) if (nonempty(value(sheet, r, c))) { any = true; break; }
-      if (any) noteRows.push(r);
+      let any = false; for (let c = 1; c <= Math.min(sheet.maxCol, 180); c += 1) if (nonempty(value(sheet, r, c))) { any = true; break; }
+      if (any) candidateRows.push(r);
     }
-    const relevantRows = [info.row, ...info.rows, ...noteRows];
+    const notesAt = candidateRows.findIndex((r) => rowHasNotesLabel(sheet, r, info.dateCol));
+    const noteRows = notesAt >= 0 ? candidateRows.slice(0, notesAt + 1) : candidateRows;
+    const interstitialRowNumbers = (topicHeader && notesAt >= 0) ? candidateRows.slice(notesAt + 1) : [];
+    const relevantRows = [info.row, ...info.rows, ...candidateRows];
     let lastCol = info.dateCol;
-    for (let c = info.dateCol + 1; c <= Math.min(sheet.maxCol, 180); c += 1) {
-      if (relevantRows.some((r) => nonempty(value(sheet, r, c)))) lastCol = c;
-    }
-    const gradeCols = [];
-    for (let c = info.dateCol + 1; c <= lastCol; c += 1) {
-      if (relevantRows.some((r) => nonempty(value(sheet, r, c)))) gradeCols.push(c);
-    }
+    for (let c = info.dateCol + 1; c <= Math.min(sheet.maxCol, 180) + 0; c += 1) if (relevantRows.some((r) => nonempty(value(sheet, r, c)))) lastCol = c;
+    const gradeCols = []; for (let c = info.dateCol + 1; c <= lastCol; c += 1) if (relevantRows.some((r) => nonempty(value(sheet, r, c)))) gradeCols.push(c);
     const headers = gradeCols.map((c) => modelCell(file, sheet.name, getCell(sheet, info.row, c)));
-    const students = info.rows.map((r) => ({
-      sourceRow: r,
-      index: modelCell(file, sheet.name, getCell(sheet, r, info.idxCol)),
-      name: modelCell(file, sheet.name, getCell(sheet, r, info.nameCol)),
-      marks: gradeCols.map((c) => modelCell(file, sheet.name, getCell(sheet, r, c))),
-    }));
-    const notes = noteRows.map((r) => {
-      const prefix = [];
-      for (let c = 1; c <= info.dateCol; c += 1) prefix.push(modelCell(file, sheet.name, getCell(sheet, r, c)));
-      return {
-        sourceRow: r,
-        label: combineCells(prefix, ' '),
-        marks: gradeCols.map((c) => modelCell(file, sheet.name, getCell(sheet, r, c))),
-      };
-    });
-    return { sheet: sheet.name, headerRow: info.row, dateCol: info.dateCol, gradeCols, headers, students, notes };
+    const students = info.rows.map((r) => ({ sourceRow:r, index:modelCell(file,sheet.name,getCell(sheet,r,info.idxCol)), name:modelCell(file,sheet.name,getCell(sheet,r,info.nameCol)), marks:gradeCols.map((c)=>modelCell(file,sheet.name,getCell(sheet,r,c))) }));
+    const notes = noteRows.map((r) => buildAuxRow(file, sheet, r, info.dateCol, gradeCols, rowHasNotesLabel(sheet,r,info.dateCol)));
+    const interstitialRows = interstitialRowNumbers.map((r) => buildAuxRow(file, sheet, r, info.dateCol, gradeCols, false));
+    const columnContexts = headers.map((h,index)=>({index,label:h.text,type:Validation.isAttestationHeader(h.text)?'attestation':'grade'}));
+    const meaningfulGradeColumns = gradeCols.filter((_,i)=>nonempty(headers[i]?.text)||students.some((st)=>nonempty(st.marks[i]?.text)));
+    return { sheet:sheet.name, headerRow:info.row, dateCol:info.dateCol, gradeCols, headers, students, notes, interstitialRows, columnContexts, meaningfulGradeColumns:meaningfulGradeColumns.length, hasMeaningfulGradeContent:meaningfulGradeColumns.length>0 };
   }
 
   function buildTopicModel(workbook, sheet, info) {
@@ -225,23 +224,26 @@
     return Array.from(map.values());
   }
 
-  function warningFromSource(source, kind, message) {
-    return {
-      id: source.key, kind, message, file: source.file, sheet: source.sheet, cell: source.cell,
-      original: source.text, formula: source.formula || '', correctable: true,
-    };
+  function warningFromSource(source, kind, message, extra = {}) {
+    return { id:source.key, kind, message, file:source.file, sheet:source.sheet, cell:source.cell, original:source.text, formula:source.formula||'', correctable:true, requiresDecision:true, allowReplace:true, ...extra };
   }
-
-  function validateSources(sourceManifest) {
-    const warnings = [];
-    for (const s of sourceManifest) {
-      if (s.formula && (!s.hasCachedFormulaResult || s.isError)) {
-        warnings.push(warningFromSource(s, 'formula_error', 'Формула не має коректного кешованого результату. Формула не виконується; можна задати значення лише для PDF.'));
-      } else if (s.isError) {
-        warnings.push(warningFromSource(s, 'cell_error', 'У клітинці Excel міститься помилка. Можна залишити її як є, замінити лише у PDF або зробити порожньою лише у PDF.'));
+  function validateSources(sourceManifest, subject) {
+    const warnings=[]; for(const s of sourceManifest){
+      if(s.formula&&(!s.hasCachedFormulaResult||s.isError)) warnings.push(warningFromSource(s,'formula_error','Формула не має коректного кешованого результату. Формула не виконується; оберіть значення лише для PDF.',{category:'excel_error',groupKey:`excel_error|${norm(s.text)}`,subject,columnContext:'Excel formula/error'}));
+      else if(s.isError) warnings.push(warningFromSource(s,'cell_error','У клітинці Excel міститься помилка. Оберіть: прибрати, залишити або замінити лише у PDF.',{category:'excel_error',groupKey:`excel_error|${norm(s.text)}`,subject,columnContext:'Excel error'}));
+    } return warnings;
+  }
+  function applyGradeNormalization(grade, discipline, warnings) {
+    if(!grade)return{auto:0}; let auto=0;
+    for(let ci=0;ci<grade.headers.length;ci+=1){const context=grade.columnContexts[ci]||{type:'grade',label:grade.headers[ci]?.text||''};
+      for(const student of grade.students){const mark=student.marks[ci],src=mark?.sources?.[0]; if(!src||!nonempty(mark.text))continue; if(src.isError||(src.formula&&!src.hasCachedFormulaResult))continue; const r=Validation.normalizeGradeValue(mark.text,context.type);
+        if(r.status==='auto'){mark.pdfText=r.value;mark.autoNormalization={from:mark.text,to:r.value,reason:r.reason,columnContext:context.type};auto+=1;}
+        else if(r.status==='review'){const category=context.type==='attestation'?'attestation':'nonstandard_grade'; warnings.push(warningFromSource(src,context.type==='attestation'?'nonstandard_attestation':'nonstandard_grade',context.type==='attestation'?'У колонці атестації/переатестації знайдено нестандартне значення.':'У звичайній клітинці оцінки знайдено нестандартне значення.',{category,groupKey:`${category}|${norm(mark.text)}`,subject:discipline.subject,columnContext:context.label||(context.type==='attestation'?'Атестація':'Звичайна оцінка')}));}
       }
-    }
-    return warnings;
+    } return{auto};
+  }
+  function addInterstitialWarnings(grade, discipline, warnings) {
+    if(!grade?.interstitialRows?.length)return; for(const row of grade.interstitialRows){const cells=[row.label,...(row.marks||[])].flatMap(c=>c?.sources||[]).filter(s=>nonempty(s.text));if(!cells.length)continue;const refs=cells.map(s=>s.cell),original=cells.map(s=>`${s.cell}: ${s.text}`).join(' | '),id=`interstitial|${discipline.file}|${grade.sheet}|${row.sourceRow}`;row.warningId=id;warnings.push({id,kind:'interstitial_text',category:'extra_text',groupKey:`extra_text|${norm(original)}`,message:'Знайдено зайвий текст між таблицею оцінок і таблицею тем. Вирішіть, чи переносити його в PDF.',file:discipline.file,subject:discipline.subject,sheet:grade.sheet,cell:refs.length===1?refs[0]:`${refs[0]}…${refs[refs.length-1]}`,original,formula:'',correctable:true,requiresDecision:true,allowReplace:false,columnContext:'Між «Примітки» та таблицею тем',sourceKeys:cells.map(s=>s.key)});}
   }
 
   function analyzeWorkbook(workbook) {
@@ -255,7 +257,7 @@
     const topicCandidates = sheetAnalyses.filter((x) => x.topic).sort((a,b)=>b.topic.score-a.topic.score);
     const warnings = [];
     const warning = (kind, message, sheet = '', cell = '') => warnings.push({
-      id: `${displayFile}|${sheet}|${cell}|${kind}`, kind, message, file: displayFile, sheet, cell, original: '', formula: '', correctable: false,
+      id: `${displayFile}|${sheet}|${cell}|${kind}`, kind, category:'structure', message, file: displayFile, subject:'', sheet, cell, original: '', formula: '', correctable: false, requiresDecision:false,
     });
 
     if (!gradeCandidates.length) warning('structure', 'Не вдалося надійно визначити аркуш з оцінками.');
@@ -292,17 +294,24 @@
       stats: {
         students: grade?.students.length || 0,
         gradeColumns: grade?.headers.length || 0,
+        meaningfulGradeColumns: grade?.meaningfulGradeColumns || 0,
+        gradePageEligible: Boolean(grade?.students.length && grade?.hasMeaningfulGradeContent),
+        emptyGradePageSkippedCandidate: Boolean(grade?.students.length && !grade?.hasMeaningfulGradeContent),
         topicRows: topics?.rows.length || 0,
         topicContinuationsMerged: topics?.continuations || 0,
+        autoNormalizations: 0,
       },
     };
-    if (grade && grade.students.length && grade.headers.length === 0) warning('structure', 'Список студентів знайдено, але колонок оцінок/дат немає.', grade.sheet);
-    if (topics && topics.rows.length === 0) warning('structure', 'Заголовок таблиці тем знайдено, але заповнених рядків тем немає.', topics.sheet);
-
+    for (const w of warnings) if (!w.subject) w.subject = discipline.subject;
+    if (grade && grade.students.length && !grade.hasMeaningfulGradeContent) { warning('structure', 'Список студентів знайдено, але змістовних колонок оцінок/дат/атестації немає. Порожню сторінку оцінок буде пропущено.', grade.sheet); warnings[warnings.length-1].subject=discipline.subject; }
+    if (topics && topics.rows.length === 0) { warning('structure', 'Заголовок таблиці тем знайдено, але заповнених рядків тем немає.', topics.sheet); warnings[warnings.length-1].subject=discipline.subject; }
+    const normalized=applyGradeNormalization(grade,discipline,warnings); discipline.stats.autoNormalizations=normalized.auto; addInterstitialWarnings(grade,discipline,warnings);
     const sourceManifest = uniqueSources(discipline);
-    warnings.push(...validateSources(sourceManifest));
+    warnings.push(...validateSources(sourceManifest,discipline.subject));
     discipline.sourceManifest = sourceManifest;
     discipline.stats.selectedSourceCells = sourceManifest.length;
+    discipline.stats.redSourceCells = sourceManifest.filter((s)=>s.isRed).length;
+    discipline.stats.decisionRequired = warnings.filter((w)=>w.requiresDecision).length;
     return { discipline, warnings };
   }
 

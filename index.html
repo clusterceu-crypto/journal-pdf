@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://raw.githubusercontent.com; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
-  <title>Journal PDF v1.2.0</title>
+  <title>Journal PDF v1.2.1</title>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -15,20 +15,21 @@
       <div>
         <p class="eyebrow">Локальна обробка у браузері</p>
         <h1>Journal PDF</h1>
-        <p class="subtitle">ZIP електронних журналів → один архівний PDF без завантаження навчальних даних на сервер.</p>
+        <p class="subtitle">ZIP електронних журналів → один архівний PDF без передачі навчальних даних на сервер.</p>
       </div>
-      <div class="version" id="version">Journal PDF v1.2.0</div>
+      <div class="version" id="version">Journal PDF v1.2.1</div>
     </header>
 
     <section class="privacy-note" aria-label="Принцип обробки">
-      <strong>Компонування можна змінювати, фактичні дані журналу — ні.</strong>
-      <span>Файли обробляються в пам’яті браузера. Формули й макроси не виконуються.</span>
+      <strong>Нормалізація застосовується тільки до PDF-моделі.</strong>
+      <span>Оригінальні XLSX/XLSM не змінюються; формули й макроси не виконуються.</span>
     </section>
 
     <section class="controls card">
       <input id="zipInput" type="file" accept=".zip,application/zip" hidden>
       <button id="openBtn" type="button" class="primary">Відкрити архів з журналами групи</button>
-      <button id="generateBtn" type="button" class="primary" disabled>Завантажити журнал групи в PDF</button>
+      <button id="reviewBtn" type="button" class="secondary" disabled>Перевірити нестандартні значення</button>
+      <button id="generateBtn" type="button" class="primary" disabled>Створити журнал групи в PDF</button>
       <a id="downloadBtn" class="primary download disabled" aria-disabled="true">Завантажити готовий журнал групи в PDF</a>
       <button id="copyReportBtn" type="button" class="secondary" disabled>Скопіювати технічний звіт</button>
       <label class="toggle"><input id="jokesToggle" type="checkbox" checked> Показувати легкі жарти під час очікування</label>
@@ -38,7 +39,8 @@
       <div class="metric card"><span>ZIP</span><strong id="zipName">—</strong></div>
       <div class="metric card"><span>Група</span><strong id="groupName">—</strong></div>
       <div class="metric card"><span>Знайдено предметів</span><strong id="subjectCount">0</strong></div>
-      <div class="metric card"><span>Попереджень</span><strong id="warningCount">0</strong></div>
+      <div class="metric card"><span>Автонормалізовано</span><strong id="autoCount">0</strong></div>
+      <div class="metric card"><span>Потребують рішення</span><strong id="decisionCount">0</strong></div>
     </section>
 
     <section id="statusPanel" class="progress-card card">
@@ -64,14 +66,29 @@
     </details>
 
     <details class="card details" open>
-      <summary>Попередження та ручні рішення</summary>
-      <p class="help">За замовчуванням кожне проблемне значення залишається як є. Заміна або очищення застосовується тільки до майбутнього PDF і ніколи не змінює Excel.</p>
+      <summary>Структурні попередження</summary>
+      <p class="help">Тут показуються лише повідомлення, які не потребують рішення «прибрати / залишити / замінити». Нестандартні значення відкриваються окремою кнопкою.</p>
       <div id="warningsList">Попереджень немає.</div>
     </details>
 
+    <dialog id="reviewDialog" class="review-dialog">
+      <div class="review-shell">
+        <header class="review-header">
+          <div><p class="eyebrow">Контроль перед PDF</p><h2 id="reviewTitle">Знайдено нестандартні значення</h2></div>
+          <button id="closeReviewBtn" class="icon-btn" type="button" aria-label="Закрити">×</button>
+        </header>
+        <p class="review-stats">Без рішення: <strong id="reviewPending">0</strong>. Усі рішення змінюють тільки майбутній PDF.</p>
+        <div id="reviewGroups" class="review-groups"></div>
+        <footer class="review-footer">
+          <button id="cancelReviewBtn" type="button" class="secondary">Повернутися</button>
+          <button id="applyGenerateBtn" type="button" class="primary">Застосувати рішення та створити PDF</button>
+        </footer>
+      </div>
+    </dialog>
+
     <footer>
-      <p>Journal PDF v1.2.0 · A4 landscape · Unicode serif · без шифрування PDF</p>
-      <p>Сторінка GitHub Pages віддає лише код застосунку. Навчальні файли не надсилаються застосунком на зовнішні API.</p>
+      <p>Journal PDF v1.2.1 · A4 landscape · Unicode serif · незахищений PDF</p>
+      <p>GitHub Pages віддає тільки код. Журнали обробляються локально у пам’яті браузера.</p>
     </footer>
   </main>
   <script src="js/validation.js"></script>

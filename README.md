@@ -1,20 +1,21 @@
-# Journal PDF v1.2.0
+# Journal PDF v1.2.1
 
 **Journal PDF** is a browser-only web application that converts a ZIP archive of group electronic journals (`.xlsx` / `.xlsm`) into one printable, unencrypted A4 landscape PDF.
 
-> Core rule: **layout may change; factual educational data may not.** If the structure or a cell is ambiguous, the application reports a warning instead of silently “fixing” the journal.
+> Core rule: **layout may change; factual educational data may not.** Version 1.2.1 adds explicitly specified PDF-only normalization rules; anything outside those deterministic rules is shown to the user for a decision instead of being guessed.
 
 ## Privacy model
 
-- The ZIP, Excel contents, names, grades, themes and generated PDF are processed in browser memory.
-- Journal files are not uploaded by the application to a server or third-party API.
+- ZIP, Excel contents, names, grades, themes and the generated PDF are processed in browser memory.
+- Journal data is not uploaded by the application to a server or third-party API.
 - `localStorage` and `IndexedDB` are not used for journal data.
 - Reloading the page clears the in-memory working state.
 - Excel macros are never executed.
-- Excel formulas are never calculated. Existing cached/display values are read when available; a formula without a usable cached result becomes a warning.
-- GitHub Pages only serves the static HTML/CSS/JavaScript application.
+- Excel formulas are never calculated. A formula without a usable cached/display value becomes a review item.
+- The source XLSX/XLSM is never rewritten; normalization and user decisions exist only in the internal PDF model.
+- GitHub Pages only serves static HTML/CSS/JavaScript.
 
-The PDF needs a Ukrainian-capable Unicode serif font. The app first tries `assets/Tinos-Regular.ttf` and otherwise downloads the **static Tinos Regular font file only** from a version-pinned upstream URL. No journal data is attached to that request. See `THIRD_PARTY_LICENSES.md`.
+The PDF embeds **Tinos Regular**, a Unicode serif font with Ukrainian support. The app first tries `assets/Tinos-Regular.ttf` and otherwise downloads only the pinned upstream font file. Journal data is never part of that request. See `THIRD_PARTY_LICENSES.md`.
 
 ## Supported journal layouts
 
@@ -22,63 +23,85 @@ The PDF needs a Ukrainian-capable Unicode serif font. The app first tries `asset
 Grades and `Дата | Кількість годин | Теми занять` are on the same worksheet.
 
 ### Type B
-Grades are on one worksheet and the lesson-topic table is on another worksheet of the same workbook. Worksheet names are not used for classification; the type is determined from cell content. Both worksheets are combined into one discipline.
+Grades are on one worksheet and the lesson-topic table is on another worksheet of the same workbook. Worksheet names are not used for classification; content is. The worksheets are combined into one discipline.
 
-## PDF rules
+## PDF-only grade normalization in v1.2.1
+
+Ordinary grade cells accept grades `1..12`, `нб`, and two normal grades such as `5/6`. Deterministic normalization includes:
+
+- `н` → `нб`;
+- `10/-` → `10`, `-/7` → `7`, `/7` → `7`, `7/` → `7`;
+- `нб/-` → `нб`, `-/нб` → `нб`;
+- `нб/5` → `5`, `5/нб` → `5` (same rule for other valid grades);
+- `нб/зрх` and `зрх/нб` → `нб`;
+- `н/1` → `1` after interpreting `н` as `нб` in an ordinary grade column.
+
+In confidently detected `атестація` / `переатестація` columns:
+
+- `н` → `н/а`;
+- `на` → `н/а`;
+- a grade `1..12`, `н/а`, or blank is accepted.
+
+Unlisted or ambiguous constructions are **not guessed**. Values such as standalone `зрх`, `?`, `-`, `.`, and other unknown text are sent to the review panel.
+
+## Review panel
+
+After ZIP analysis the UI shows:
+
+- number of disciplines;
+- number of automatic PDF-only normalizations;
+- number of cases requiring a user decision;
+- the button **Перевірити нестандартні значення**.
+
+Review items are grouped into:
+
+- nonstandard grades;
+- attestation / re-attestation;
+- text found between the `Примітки` row and the topic table;
+- Excel formulas/errors.
+
+Each group shows the original value, count, file, discipline, worksheet, cell and column context. The user can **Прибрати**, **Залишити**, or **Замінити на…** (where replacement is applicable), either for a single cell or all equal grouped cases. Extra text between tables intentionally supports only remove/keep. All decisions affect the generated PDF only.
+
+## `Примітки`
+
+The `Примітки` row remains part of the grade table. Its label is rendered in a merged 79 mm label area so the word is fully readable. Service annotations to the right (`кр`, `дз`, `л.98`, `дз.101`, `тест`, etc.) are not grade-normalized and are preserved as entered.
+
+If separate text appears after `Примітки` but before the topics header, it becomes a review item rather than being included automatically.
+
+## PDF layout and color rules
 
 - A4 landscape on every page.
-- One PDF for the entire group, disciplines sorted alphabetically.
-- Grades first, topics second within each discipline.
-- `№` width: 9 mm; student-name width: 70 mm; every grade/date column: **8 mm**.
-- A small number of date columns is **not** stretched to the right page edge.
-- Many date columns are split across additional pages; the discipline, teacher and full student list are repeated on every grade page.
-- Topic table uses narrow date/hour columns and the remaining width for the theme.
-- Long themes wrap and rows grow as required.
-- Safe topic continuation rule: if the next row has empty date + hours and non-empty theme text, its text is appended as a continuation of the previous theme. Words are not corrected or normalized.
-- Main text is black. Text originating from an Excel cell with red font remains red in the PDF.
-- PDF text remains selectable/searchable text; pages are not screenshots.
-- PDF is not encrypted and is suitable for later signing with KEP/EDS tooling.
+- One PDF for the entire group; disciplines sorted alphabetically.
+- Grades first, topics second within a discipline.
+- `№`: 9 mm; student name: 70 mm; every grade/date column: **8 mm**.
+- Small grade tables are not stretched to the page edge.
+- Many grade columns continue on new pages with discipline, teacher and the full student list repeated.
+- A grade page is omitted when the workbook contains only `№ | ПІБ студента` and no meaningful date/grade/attestation columns. Topic pages for that discipline are still retained.
+- **Every piece of text in the grade table is black**, regardless of Excel font color.
+- In `Дата | Кількість годин | Теми занять`, red is preserved **only for numeric values in `Кількість годин` whose source Excel cell is red**. All other topic-table text is black.
+- Long topics wrap without clipping.
+- Safe topic continuation: a row with blank date + hours and non-empty topic text is joined to the previous topic; source wording is not corrected.
+- PDF text remains selectable/searchable, the PDF is not encrypted, and the Tinos Unicode font is embedded.
 
-## Validation and manual PDF-only decisions
+## ZIP safety
 
-Before PDF creation the app reports, among other things:
+The browser ZIP reader rejects path traversal, absolute paths, symlinks, encrypted entries, ZIP64 entries, unsupported compression methods and CRC failures. Limits include:
 
-- Excel error cells such as `#NAME?` and `#VALUE!`;
-- formulas that have no usable cached result;
-- unreadable workbooks;
-- ambiguous or incomplete journal structures.
-
-For a correctable cell the user can:
-
-1. leave it as-is (default);
-2. enter a replacement used **only in the PDF**;
-3. make it blank **only in the PDF**.
-
-The original workbook is never modified.
-
-## ZIP safety limits
-
-The browser ZIP reader rejects unsafe paths, symlinks, encrypted entries, ZIP64 entries, unsupported compression methods and CRC failures. Current outer-archive limits are:
-
-- archive: 200 MB;
+- outer archive: 200 MB;
 - up to 500 ZIP entries;
 - up to 500 MB total uncompressed data;
 - up to 50 MB for one outer entry;
-- suspicious compression ratio above 250:1 for entries over 1 MB is rejected;
-- up to 200 Excel journal files per group archive.
-
-Individual XLSX/XLSM files are themselves ZIP containers and are parsed under additional internal limits.
+- suspicious compression ratio above 250:1 for entries over 1 MB;
+- up to 200 Excel journals per group archive.
 
 ## Browser requirements
 
-A modern browser with `Worker`, `Blob`, `TextDecoder`, `DataView`, `fetch` and `DecompressionStream('deflate-raw')` support is required. Current Chromium-family browsers are the primary tested target for v1.2.0.
+A modern browser with `Worker`, `Blob`, `TextDecoder`, `DataView`, `fetch` and `DecompressionStream('deflate-raw')`. Chromium-family browsers are the primary tested target.
 
 ## GitHub Pages
 
-The repository is intended to be served directly from the branch root:
-
 - test branch: `develop`;
-- stable branch: `main` after explicit approval;
+- stable branch: `main` only after explicit approval;
 - test URL: `https://clusterceu-crypto.github.io/journal-pdf/`.
 
 No Python/FastAPI server is required.
@@ -93,8 +116,7 @@ journal-pdf/
 ├── LICENSE
 ├── THIRD_PARTY_LICENSES.md
 ├── .gitignore
-├── css/
-│   └── app.css
+├── css/app.css
 ├── js/
 │   ├── app.js
 │   ├── archive.js
@@ -104,29 +126,20 @@ journal-pdf/
 │   ├── validation.js
 │   ├── progress.js
 │   └── worker.js
-├── assets/
-│   └── README.md
+├── assets/README.md
 └── tests/
     ├── README.md
     └── run-tests.mjs
 ```
 
-## Local development
+## Testing
 
-Serve the repository with any static HTTP server. Do not open `index.html` via `file://`, because Web Workers and font fetching are subject to browser origin restrictions.
-
-Example for development only:
-
-```bash
-python -m http.server 8080
-```
-
-Then open `http://127.0.0.1:8080/`.
+Real fixtures are passed to the test runner by external path and are never committed. The v1.2.1 runner contains the required 24 tests plus a recognized-source → PDF-render loss audit. See `tests/README.md`.
 
 ## Test data policy
 
-Real `.xlsx`, `.xlsm`, `.zip` and generated `.pdf` files are excluded by `.gitignore`. **Do not add exceptions for `tests/fixtures`.** Tests accept external paths so real journals remain outside the repository.
+Real `.xlsx`, `.xlsm`, `.zip` and generated `.pdf` are excluded by `.gitignore`. Do not add an exception for `tests/fixtures`.
 
 ## Version
 
-Current version: **Journal PDF v1.2.0**.
+Current version: **Journal PDF v1.2.1**.

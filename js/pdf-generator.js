@@ -108,11 +108,12 @@
   }
 
   class PageCanvas {
-    constructor(font) { this.font=font; this.commands=[]; }
+    constructor(font) { this.font=font; this.commands=[]; this.redTextCalls=0; }
     line(x1,y1,x2,y2,width=0.55) { this.commands.push(`${num(width)} w ${num(x1)} ${num(y1)} m ${num(x2)} ${num(y2)} l S`); }
     rect(x,y,w,h,width=0.55) { this.commands.push(`${num(width)} w ${num(x)} ${num(y)} ${num(w)} ${num(h)} re S`); }
     text(text,x,y,size=8,color=BLACK,rotation=0) {
       if (text === null || text === undefined || String(text)==='') return;
+      if (color === RED) this.redTextCalls += 1;
       const bytes=this.font.encode(String(text)); const a=rotation===90?'0 1 -1 0':rotation===-90?'0 -1 1 0':'1 0 0 1';
       this.commands.push(`BT /F1 ${num(size)} Tf ${colorCmd(color)} ${a} ${num(x)} ${num(y)} Tm <${hex(bytes)}> Tj ET`);
     }
@@ -152,82 +153,30 @@
     return {fontSize:fs,lines};
   }
 
-  function registerSources(manifest, cell, overrides, renderedRed) {
+  function registerSources(manifest, cell, overrides) {
     if (!cell?.sources) return;
-    for (const src of cell.sources) {
-      const resolved=Validation.resolveSource(src,overrides); if(resolved.text==='')continue; manifest.add(src.key); if(resolved.isRed)renderedRed.add(src.key);
-    }
+    for (const src of cell.sources) { const r=Validation.resolveSource(src,overrides); if(r.text!=='')manifest.add(src.key); }
   }
-  function resolved(cell,overrides,manifest,renderedRed){registerSources(manifest,cell,overrides,renderedRed);return Validation.resolveCell(cell,overrides);}
-
-  function drawSubjectHeader(c,discipline,font) {
-    const subject=discipline.subject||discipline.file||'Журнал'; const teacher=discipline.teacher?`Викладач: ${discipline.teacher}`:'Викладач:';
-    const sw=font.width(subject,11); c.text(subject,(A4.width-sw)/2,A4.height-24,11,BLACK);
-    const tw=font.width(teacher,9.5); c.text(teacher,(A4.width-tw)/2,A4.height-39,9.5,BLACK);
-  }
-
+  function resolved(cell,overrides,manifest){registerSources(manifest,cell,overrides);return Validation.resolveCell(cell,overrides);}
+  function blackCell(cell){if(!cell)return cell;return{...cell,isRed:false,segments:(cell.segments||[]).map(seg=>({...seg,isRed:false}))};}
+  function numericRedHoursCell(sourceCell,resolvedCell,renderedRed){const txt=String(resolvedCell?.text||'').trim(),numeric=/^\d+$/.test(txt),redSources=numeric?(sourceCell?.sources||[]).filter(s=>s.isRed):[];if(!numeric||!redSources.length)return blackCell(resolvedCell);for(const src of redSources)renderedRed.add(src.key);return{...resolvedCell,isRed:true,segments:(resolvedCell.segments?.length?resolvedCell.segments:[{text:txt,key:redSources[0]?.key||''}]).map(seg=>({...seg,isRed:true}))};}
+  function drawSubjectHeader(c,discipline,font){const subject=discipline.subject||discipline.file||'Журнал',teacher=discipline.teacher?`Викладач: ${discipline.teacher}`:'Викладач:';const sw=font.width(subject,11);c.text(subject,(A4.width-sw)/2,A4.height-24,11,BLACK);const tw=font.width(teacher,9.5);c.text(teacher,(A4.width-tw)/2,A4.height-39,9.5,BLACK);}
+  function includedInterstitialRows(grade,overrides){return(grade?.interstitialRows||[]).filter(row=>overrides?.[row.warningId]?.mode==='keep');}
   function gradePages(discipline,font,overrides,manifest,renderedRed){
-    const grade=discipline.grade; if(!grade||!grade.students.length)return [];
-    const margin=10*PT_PER_MM, idxW=9*PT_PER_MM, nameW=70*PT_PER_MM, gradeW=8*PT_PER_MM;
-    const available=A4.width-margin*2; const maxCols=Math.max(1,Math.floor((available-idxW-nameW)/gradeW));
-    const chunks=[]; if(grade.headers.length===0)chunks.push([]); else for(let i=0;i<grade.headers.length;i+=maxCols)chunks.push(Array.from({length:Math.min(maxCols,grade.headers.length-i)},(_,k)=>i+k));
-    const pages=[];
-    for(const chunk of chunks){
-      const c=new PageCanvas(font); drawSubjectHeader(c,discipline,font);
-      const top=A4.height-54, headerH=78; const rows=[...grade.students,...grade.notes]; const bodyAvail=top-margin-headerH; const rowH=Math.min(17,bodyAvail/Math.max(1,rows.length));
-      if(rowH<11.5)throw new Error(`Забагато рядків для A4 без втрати читабельності: ${discipline.subject}.`);
-      const tableW=idxW+nameW+chunk.length*gradeW; let y=top-headerH;
-      c.rect(margin,y,idxW,headerH); c.rect(margin+idxW,y,nameW,headerH);
-      drawResolvedCell(c,{text:'№',segments:[{text:'№',isRed:false}]},margin,y,idxW,headerH,font,{size:8.2,align:'center'});
-      drawResolvedCell(c,{text:'ПІБ студента',segments:[{text:'ПІБ студента',isRed:false}]},margin+idxW,y,nameW,headerH,font,{size:8.2,align:'center'});
-      chunk.forEach((ci,j)=>{
-        const x=margin+idxW+nameW+j*gradeW; c.rect(x,y,gradeW,headerH); const cell=resolved(grade.headers[ci],overrides,manifest,renderedRed); const txt=String(cell.text||'').replace(/\r\n|\r|\n/g,' ');
-        let fs=7; const maxH=headerH-8; const tw=font.width(txt,fs); if(tw>maxH&&tw>0)fs=Math.max(4.8,fs*maxH/tw);
-        const color=cell.isRed?RED:BLACK; const baseY=y+4; const baseX=x+gradeW/2+fs*0.32; c.text(txt,baseX,baseY,fs,color,90);
-      });
-      let ry=y;
-      for(const r of grade.students){ry-=rowH; c.rect(margin,ry,idxW,rowH);c.rect(margin+idxW,ry,nameW,rowH);
-        const ic=resolved(r.index,overrides,manifest,renderedRed), nc=resolved(r.name,overrides,manifest,renderedRed);
-        drawResolvedCell(c,ic,margin,ry,idxW,rowH,font,{size:7.2,align:'center',padding:1.3,maxLines:2});
-        drawResolvedCell(c,nc,margin+idxW,ry,nameW,rowH,font,{size:7.7,align:'left',padding:2,maxLines:2});
-        chunk.forEach((ci,j)=>{const x=margin+idxW+nameW+j*gradeW;c.rect(x,ry,gradeW,rowH);const mc=resolved(r.marks[ci],overrides,manifest,renderedRed);drawResolvedCell(c,mc,x,ry,gradeW,rowH,font,{size:6.2,align:'center',padding:1,maxLines:2});});
-      }
-      for(const r of grade.notes){ry-=rowH;c.rect(margin,ry,idxW,rowH);c.rect(margin+idxW,ry,nameW,rowH); const lc=resolved(r.label,overrides,manifest,renderedRed);drawResolvedCell(c,lc,margin,ry,idxW+nameW,rowH,font,{size:6.2,align:'left',padding:2,maxLines:2});
-        chunk.forEach((ci,j)=>{const x=margin+idxW+nameW+j*gradeW;c.rect(x,ry,gradeW,rowH);const mc=resolved(r.marks[ci],overrides,manifest,renderedRed);drawResolvedCell(c,mc,x,ry,gradeW,rowH,font,{size:5.8,align:'center',padding:1,maxLines:2});});
-      }
-      pages.push({canvas:c,kind:'grades',subject:discipline.subject,gradeColumns:chunk.length,tableWidth:tableW,gradeWidth:gradeW,studentCount:grade.students.length});
-    }
+    const grade=discipline.grade;if(!grade||!grade.students.length||!grade.hasMeaningfulGradeContent)return[];
+    const margin=10*PT_PER_MM,idxW=9*PT_PER_MM,nameW=70*PT_PER_MM,gradeW=8*PT_PER_MM,available=A4.width-margin*2,maxCols=Math.max(1,Math.floor((available-idxW-nameW)/gradeW));
+    const chunks=[];for(let i=0;i<grade.headers.length;i+=maxCols)chunks.push(Array.from({length:Math.min(maxCols,grade.headers.length-i)},(_,k)=>i+k));if(!chunks.length)return[];const pages=[],extraRows=includedInterstitialRows(grade,overrides);
+    for(const chunk of chunks){const c=new PageCanvas(font);drawSubjectHeader(c,discipline,font);const top=A4.height-54,headerH=78,rows=[...grade.students,...grade.notes,...extraRows],bodyAvail=top-margin-headerH,rowH=Math.min(17,bodyAvail/Math.max(1,rows.length));if(rowH<11.5)throw new Error(`Забагато рядків для A4 без втрати читабельності: ${discipline.subject}.`);const tableW=idxW+nameW+chunk.length*gradeW;let y=top-headerH;c.rect(margin,y,idxW,headerH);c.rect(margin+idxW,y,nameW,headerH);drawResolvedCell(c,{text:'№',segments:[{text:'№',isRed:false}]},margin,y,idxW,headerH,font,{size:8.2,align:'center'});drawResolvedCell(c,{text:'ПІБ студента',segments:[{text:'ПІБ студента',isRed:false}]},margin+idxW,y,nameW,headerH,font,{size:8.2,align:'center'});
+      chunk.forEach((ci,j)=>{const x=margin+idxW+nameW+j*gradeW;c.rect(x,y,gradeW,headerH);const cell=blackCell(resolved(grade.headers[ci],overrides,manifest)),txt=String(cell.text||'').replace(/\r\n|\r|\n/g,' ');let fs=7,maxH=headerH-8,tw=font.width(txt,fs);if(tw>maxH&&tw>0)fs=Math.max(4.8,fs*maxH/tw);c.text(txt,x+gradeW/2+fs*0.32,y+4,fs,BLACK,90);});
+      let ry=y;for(const r of grade.students){ry-=rowH;c.rect(margin,ry,idxW,rowH);c.rect(margin+idxW,ry,nameW,rowH);drawResolvedCell(c,blackCell(resolved(r.index,overrides,manifest)),margin,ry,idxW,rowH,font,{size:7.2,align:'center',padding:1.3,maxLines:2});drawResolvedCell(c,blackCell(resolved(r.name,overrides,manifest)),margin+idxW,ry,nameW,rowH,font,{size:7.7,align:'left',padding:2,maxLines:2});chunk.forEach((ci,j)=>{const x=margin+idxW+nameW+j*gradeW;c.rect(x,ry,gradeW,rowH);drawResolvedCell(c,blackCell(resolved(r.marks[ci],overrides,manifest)),x,ry,gradeW,rowH,font,{size:6.2,align:'center',padding:1,maxLines:2});});}
+      for(const r of [...grade.notes,...extraRows]){ry-=rowH;c.rect(margin,ry,idxW+nameW,rowH);drawResolvedCell(c,blackCell(resolved(r.label,overrides,manifest)),margin,ry,idxW+nameW,rowH,font,{size:r.isNotesRow?7.1:6.2,align:'left',padding:2,maxLines:2});chunk.forEach((ci,j)=>{const x=margin+idxW+nameW+j*gradeW;c.rect(x,ry,gradeW,rowH);drawResolvedCell(c,blackCell(resolved(r.marks[ci],overrides,manifest)),x,ry,gradeW,rowH,font,{size:5.8,align:'center',padding:1,maxLines:2});});}
+      pages.push({canvas:c,kind:'grades',subject:discipline.subject,gradeColumns:chunk.length,gradeStart:chunk[0]??0,gradeEnd:chunk[chunk.length-1]??-1,tableWidth:tableW,gradeWidth:gradeW,studentCount:grade.students.length,redTextCount:c.redTextCalls,notesRows:grade.notes.length,interstitialRowsKept:extraRows.length,notesLabelWidth:idxW+nameW});}
     return pages;
   }
-
-  function topicHeader(c,discipline,font,topics,overrides,manifest,renderedRed,margin,dateW,hoursW,topicW,top){
-    drawSubjectHeader(c,discipline,font); const h=30, y=top-h;
-    const heads=[resolved(topics.header.date,overrides,manifest,renderedRed),resolved(topics.header.hours,overrides,manifest,renderedRed),resolved(topics.header.topic,overrides,manifest,renderedRed)];
-    const defs=[heads[0].text?heads[0]:{text:'Дата',segments:[{text:'Дата',isRed:false}]},heads[1].text?heads[1]:{text:'Кількість годин',segments:[{text:'Кількість годин',isRed:false}]},heads[2].text?heads[2]:{text:'Теми занять',segments:[{text:'Теми занять',isRed:false}]}];
-    c.rect(margin,y,dateW,h);c.rect(margin+dateW,y,hoursW,h);c.rect(margin+dateW+hoursW,y,topicW,h);
-    drawResolvedCell(c,defs[0],margin,y,dateW,h,font,{size:8.2,align:'center'});drawResolvedCell(c,defs[1],margin+dateW,y,hoursW,h,font,{size:8,align:'center'});drawResolvedCell(c,defs[2],margin+dateW+hoursW,y,topicW,h,font,{size:8.2,align:'center'});
-    return y;
-  }
-
-  function topicPages(discipline,font,overrides,manifest,renderedRed){
-    const topics=discipline.topics; if(!topics)return [];
-    const margin=10*PT_PER_MM,dateW=22*PT_PER_MM,hoursW=26*PT_PER_MM,topicW=A4.width-margin*2-dateW-hoursW,top=A4.height-54,bottom=margin;
-    const pages=[];let c=new PageCanvas(font), y=topicHeader(c,discipline,font,topics,overrides,manifest,renderedRed,margin,dateW,hoursW,topicW,top);
-    const newPage=()=>{pages.push({canvas:c,kind:'topics',subject:discipline.subject});c=new PageCanvas(font);y=topicHeader(c,discipline,font,topics,overrides,manifest,renderedRed,margin,dateW,hoursW,topicW,top);};
-    for(const row of topics.rows){
-      const dc=resolved(row.date,overrides,manifest,renderedRed),hc=resolved(row.hours,overrides,manifest,renderedRed),tc=resolved(row.topic,overrides,manifest,renderedRed);
-      const fs=8.2, lead=fs*1.22; const dLines=wrapResolved(dc,dateW-5,font,fs),hLines=wrapResolved(hc,hoursW-5,font,fs),tLines=wrapResolved(tc,topicW-6,font,fs);
-      const all=Math.max(dLines.length,hLines.length,tLines.length,1);
-      let offset=0, first=true;
-      while(offset<all){
-        if(y-bottom<lead+6)newPage(); const fit=Math.max(1,Math.floor((y-bottom-6)/lead)); const take=Math.min(all-offset,fit); const rowH=Math.max(lead+6,take*lead+6); const yy=y-rowH;
-        c.rect(margin,yy,dateW,rowH);c.rect(margin+dateW,yy,hoursW,rowH);c.rect(margin+dateW+hoursW,yy,topicW,rowH);
-        function drawLines(lines,x,w,align){let ly=yy+rowH-3-lead+fs*0.12;for(const line of lines.slice(offset,offset+take)){drawResolvedLine(c,line,x+2,ly,font,fs,align,w-4);ly-=lead;}}
-        if(first){drawLines(dLines,margin,dateW,'center');drawLines(hLines,margin+dateW,hoursW,'center');} drawLines(tLines,margin+dateW+hoursW,topicW,'left');
-        y=yy;offset+=take;first=false;if(offset<all)newPage();
-      }
-    }
-    pages.push({canvas:c,kind:'topics',subject:discipline.subject}); return pages;
+  function topicHeader(c,discipline,font,topics,overrides,manifest,margin,dateW,hoursW,topicW,top){drawSubjectHeader(c,discipline,font);const h=30,y=top-h,heads=[blackCell(resolved(topics.header.date,overrides,manifest)),blackCell(resolved(topics.header.hours,overrides,manifest)),blackCell(resolved(topics.header.topic,overrides,manifest))],defs=[heads[0].text?heads[0]:{text:'Дата',segments:[{text:'Дата',isRed:false}]},heads[1].text?heads[1]:{text:'Кількість годин',segments:[{text:'Кількість годин',isRed:false}]},heads[2].text?heads[2]:{text:'Теми занять',segments:[{text:'Теми занять',isRed:false}]}];c.rect(margin,y,dateW,h);c.rect(margin+dateW,y,hoursW,h);c.rect(margin+dateW+hoursW,y,topicW,h);drawResolvedCell(c,defs[0],margin,y,dateW,h,font,{size:8.2,align:'center'});drawResolvedCell(c,defs[1],margin+dateW,y,hoursW,h,font,{size:8,align:'center'});drawResolvedCell(c,defs[2],margin+dateW+hoursW,y,topicW,h,font,{size:8.2,align:'center'});return y;}
+  function topicPages(discipline,font,overrides,manifest,renderedRed){const topics=discipline.topics;if(!topics)return[];const margin=10*PT_PER_MM,dateW=22*PT_PER_MM,hoursW=26*PT_PER_MM,topicW=A4.width-margin*2-dateW-hoursW,top=A4.height-54,bottom=margin,pages=[];let c=new PageCanvas(font),y=topicHeader(c,discipline,font,topics,overrides,manifest,margin,dateW,hoursW,topicW,top);const pushPage=()=>pages.push({canvas:c,kind:'topics',subject:discipline.subject,redTextCount:c.redTextCalls});const newPage=()=>{pushPage();c=new PageCanvas(font);y=topicHeader(c,discipline,font,topics,overrides,manifest,margin,dateW,hoursW,topicW,top);};
+    for(const row of topics.rows){const dc=blackCell(resolved(row.date,overrides,manifest)),rawHours=resolved(row.hours,overrides,manifest),hc=numericRedHoursCell(row.hours,rawHours,renderedRed),tc=blackCell(resolved(row.topic,overrides,manifest)),fs=8.2,lead=fs*1.22,dLines=wrapResolved(dc,dateW-5,font,fs),hLines=wrapResolved(hc,hoursW-5,font,fs),tLines=wrapResolved(tc,topicW-6,font,fs),all=Math.max(dLines.length,hLines.length,tLines.length,1);let offset=0,first=true;while(offset<all){if(y-bottom<lead+6)newPage();const fit=Math.max(1,Math.floor((y-bottom-6)/lead)),take=Math.min(all-offset,fit),rowH=Math.max(lead+6,take*lead+6),yy=y-rowH;c.rect(margin,yy,dateW,rowH);c.rect(margin+dateW,yy,hoursW,rowH);c.rect(margin+dateW+hoursW,yy,topicW,rowH);function drawLines(lines,x,w,align){let ly=yy+rowH-3-lead+fs*0.12;for(const line of lines.slice(offset,offset+take)){drawResolvedLine(c,line,x+2,ly,font,fs,align,w-4);ly-=lead;}}if(first){drawLines(dLines,margin,dateW,'center');drawLines(hLines,margin+dateW,hoursW,'center');}drawLines(tLines,margin+dateW+hoursW,topicW,'left');y=yy;offset+=take;first=false;if(offset<all)newPage();}}
+    pushPage();return pages;
   }
 
   function buildToUnicode(font){
@@ -264,7 +213,7 @@
     const type0Id=pdf.add(`<< /Type /Font /Subtype /Type0 /BaseFont /${escName('Tinos-Regular')} /Encoding /Identity-H /DescendantFonts [${cidId} 0 R] /ToUnicode ${toUniId} 0 R >>`);
     const pagesId=pdf.reserve();const pageIds=[];
     for(const def of pageDefs){const stream=def.canvas.stream();const contentId=pdf.add(pdf.stream('',stream));const pageId=pdf.add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(A4.width)} ${num(A4.height)}] /Resources << /Font << /F1 ${type0Id} 0 R >> >> /Contents ${contentId} 0 R >>`);pageIds.push(pageId);}
-    pdf.set(pagesId,`<< /Type /Pages /Kids [${pageIds.map((id)=>`${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`);const catalogId=pdf.add(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);const infoId=pdf.add(`<< /Title ${infoString(title)} /Author ${infoString('Journal PDF v1.2.0')} /Producer ${infoString('Journal PDF browser-only')} >>`);return pdf.save(catalogId,infoId);
+    pdf.set(pagesId,`<< /Type /Pages /Kids [${pageIds.map((id)=>`${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`);const catalogId=pdf.add(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);const infoId=pdf.add(`<< /Title ${infoString(title)} /Author ${infoString('Journal PDF v1.2.1')} /Producer ${infoString('Journal PDF browser-only')} >>`);return pdf.save(catalogId,infoId);
   }
 
   async function loadFontBytes(options={}){
@@ -277,7 +226,7 @@
     const fontBytes=await loadFontBytes(options);const font=new TrueTypeFont(fontBytes);const manifest=new Set(),renderedRed=new Set();const pageDefs=[];const sorted=[...disciplines].sort((a,b)=>String(a.subject).localeCompare(String(b.subject),'uk'));
     for(let i=0;i<sorted.length;i+=1){const d=sorted[i];if(options.onProgress)await options.onProgress(i,sorted.length,d.subject);pageDefs.push(...gradePages(d,font,overrides,manifest,renderedRed));pageDefs.push(...topicPages(d,font,overrides,manifest,renderedRed));if(options.onProgress)await options.onProgress(i+1,sorted.length,d.subject);}
     if(!pageDefs.length)throw new Error('Не вдалося сформувати жодної сторінки PDF.');const title=`Журнал групи ${options.group||''}`.trim();const bytes=assemblePdf(pageDefs,font,fontBytes,title);
-    return {bytes,pages:pageDefs.length,pageInfo:pageDefs.map((p)=>({kind:p.kind,subject:p.subject,gradeColumns:p.gradeColumns||0,tableWidth:p.tableWidth||0,gradeWidth:p.gradeWidth||0,studentCount:p.studentCount||0})),renderedSourceKeys:Array.from(manifest),renderedRedSourceKeys:Array.from(renderedRed)};
+    return {bytes,pages:pageDefs.length,pageInfo:pageDefs.map((p)=>({kind:p.kind,subject:p.subject,gradeColumns:p.gradeColumns||0,tableWidth:p.tableWidth||0,gradeWidth:p.gradeWidth||0,gradeStart:p.gradeStart??0,gradeEnd:p.gradeEnd??-1,studentCount:p.studentCount||0,redTextCount:p.canvas?.redTextCalls||p.redTextCount||0,notesRows:p.notesRows||0,interstitialRowsKept:p.interstitialRowsKept||0,notesLabelWidth:p.notesLabelWidth||0})),renderedSourceKeys:Array.from(manifest),renderedRedSourceKeys:Array.from(renderedRed),emptyGradePagesSkipped:sorted.filter((d)=>d.stats?.emptyGradePageSkippedCandidate).length};
   }
 
   root.JournalPdf = { generatePdf, TrueTypeFont, A4, PT_PER_MM, FONT_URLS, wrapResolved };

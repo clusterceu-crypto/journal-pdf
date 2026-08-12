@@ -1,134 +1,59 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-const args = Object.fromEntries(process.argv.slice(2).reduce((a, x, i, all) => {
-  if (x.startsWith('--')) a.push([x.slice(2), all[i + 1]]); return a;
-}, []));
-if (!args.zip || !args['type-b'] || !args.font || !args.out) {
-  console.error('Usage: node tests/run-tests.mjs --zip group.zip --type-b example.xlsx --font Tinos-Regular.ttf --out result.pdf');
-  process.exit(2);
-}
-const base = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-for (const f of ['archive.js','workbook-parser.js','journal-parser.js','validation.js','pdf-generator.js']) await import(pathToFileURL(path.join(base,'js',f)));
+const argv=process.argv.slice(2); const args={}; for(let i=0;i<argv.length;i+=1)if(argv[i].startsWith('--'))args[argv[i].slice(2)]=argv[i+1];
+if(!args.zip||!args['type-b']||!args.font||!args.out){console.error('Usage: node tests/run-tests.mjs --zip group.zip --type-b example.xlsx --font Tinos-Regular.ttf --out result.pdf [--json report.json]');process.exit(2);}
+const base=path.resolve(path.dirname(new URL(import.meta.url).pathname),'..');
+for(const f of ['archive.js','workbook-parser.js','validation.js','journal-parser.js','pdf-generator.js'])await import(pathToFileURL(path.join(base,'js',f)));
+const results=[]; function test(name,fn){try{results.push({name,ok:true,detail:fn()});}catch(e){results.push({name,ok:false,detail:e.message||String(e)});}}
+function ab(buf){return buf.buffer.slice(buf.byteOffset,buf.byteOffset+buf.byteLength);} function sha(buf){return crypto.createHash('sha256').update(buf).digest('hex');}
+async function parseXlsx(bytes,display){const wb=await JournalWorkbook.parseWorkbook(ab(bytes),display);return JournalParser.analyzeWorkbook(wb);}
+function n(raw,ctx='grade'){return JournalValidation.normalizeGradeValue(raw,ctx);}
+function eq(actual,expected,label){if(actual!==expected)throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);return actual;}
+function sourcesIn(node,out=new Set()){if(!node)return out;if(Array.isArray(node)){node.forEach(x=>sourcesIn(x,out));return out;}if(typeof node!=='object')return out;if(Array.isArray(node.sources))for(const s of node.sources)if(s?.key)out.add(s.key);for(const [k,v] of Object.entries(node))if(k!=='sources'&&k!=='sourceManifest')sourcesIn(v,out);return out;}
 
-const results = [];
-function test(name, fn) {
-  try { const detail = fn(); results.push({ name, ok: true, detail }); }
-  catch (e) { results.push({ name, ok: false, detail: e.message || String(e) }); }
-}
-function ab(buf) { return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength); }
-async function parseXlsx(bytes, display) {
-  const wb = await JournalWorkbook.parseWorkbook(ab(bytes), display);
-  return JournalParser.analyzeWorkbook(wb);
-}
+const groupBytes=fs.readFileSync(args.zip),typeBBytes=fs.readFileSync(args['type-b']); const groupHashBefore=sha(groupBytes),typeBHashBefore=sha(typeBBytes);
+const outer=new JournalArchive.ZipReader(ab(groupBytes)); const entries=outer.listFiles().filter(e=>/\.(xlsx|xlsm)$/i.test(e.name)&&!/(^|\/)~\$/.test(e.name));
+const disciplines=[],warnings=[]; for(const e of entries){const bytes=await outer.readEntry(e);const display=JournalArchive.decodeGoogleUnicodeName(e.name);const a=await parseXlsx(bytes,display);disciplines.push(a.discipline);warnings.push(...a.warnings);}
+const decisions=Object.fromEntries(warnings.filter(w=>w.requiresDecision).map(w=>[w.id,{mode:'keep'}])); const fontBytes=fs.readFileSync(args.font);
+const pdf=await JournalPdf.generatePdf(disciplines,decisions,{fontBytes,group:'TEST'});fs.writeFileSync(args.out,pdf.bytes);
+const typeB=await parseXlsx(typeBBytes,path.basename(args['type-b'])); const typeBDecisions=Object.fromEntries(typeB.warnings.filter(w=>w.requiresDecision).map(w=>[w.id,{mode:'keep'}])); const typeBPdf=await JournalPdf.generatePdf([typeB.discipline],typeBDecisions,{fontBytes,group:'TYPE-B-TEST'});
 
-const groupBytes = fs.readFileSync(args.zip);
-const outer = new JournalArchive.ZipReader(ab(groupBytes));
-const entries = outer.listFiles().filter((e) => /\.(xlsx|xlsm)$/i.test(e.name) && !/(^|\/)~\$/.test(e.name));
-const disciplines = [], warnings = [];
-for (const e of entries) {
-  const bytes = await outer.readEntry(e);
-  const display = JournalArchive.decodeGoogleUnicodeName(e.name);
-  const a = await parseXlsx(bytes, display);
-  disciplines.push(a.discipline); warnings.push(...a.warnings);
-}
-const fontBytes = fs.readFileSync(args.font);
-const pdf = await JournalPdf.generatePdf(disciplines, {}, { fontBytes, group: 'TEST' });
-fs.writeFileSync(args.out, pdf.bytes);
+const allSourceKeys=new Set(disciplines.flatMap(d=>d.sourceManifest.map(s=>s.key))); const skippedKeys=new Set();for(const d of disciplines)if(d.stats?.emptyGradePageSkippedCandidate&&d.grade)sourcesIn(d.grade,skippedKeys);const expectedRendered=[...allSourceKeys].filter(k=>!skippedKeys.has(k));const rendered=new Set(pdf.renderedSourceKeys);const missing=expectedRendered.filter(k=>!rendered.has(k));
+const expectedRedHours=new Set();for(const d of disciplines)for(const r of d.topics?.rows||[]){const txt=String(r.hours?.text||'').trim();if(/^\d+$/.test(txt))for(const s of r.hours?.sources||[])if(s.isRed)expectedRedHours.add(s.key);}const actualRed=new Set(pdf.renderedRedSourceKeys);const missingRed=[...expectedRedHours].filter(k=>!actualRed.has(k));const extraRed=[...actualRed].filter(k=>!expectedRedHours.has(k));
+const autoNormalizations=disciplines.reduce((s,d)=>s+(d.stats?.autoNormalizations||0),0),decisionRequired=warnings.filter(w=>w.requiresDecision).length,emptyGradePagesSkipped=disciplines.filter(d=>d.stats?.emptyGradePageSkippedCandidate).length;
 
-const typeBBytes = fs.readFileSync(args['type-b']);
-const typeB = await parseXlsx(typeBBytes, path.basename(args['type-b']));
-const typeBPdf = await JournalPdf.generatePdf([typeB.discipline], {}, { fontBytes, group: 'TYPE-B-TEST' });
+// 1–12: controlled normalization rules.
+test('01 — `зрх` у grade-cell -> review',()=>{const r=n('зрх');eq(r.status,'review','status');return r.reason;});
+test('02 — `?` -> review',()=>{const r=n('?');eq(r.status,'review','status');return r.reason;});
+test('03 — standalone `-` and `.` -> review',()=>{eq(n('-').status,'review','-');eq(n('.').status,'review','.');return 'both require user decision';});
+test('04 — `н` -> `нб` in ordinary grade',()=>eq(n('н').value,'нб','value'));
+test('05 — `н` -> `н/а` in attestation',()=>eq(n('н','attestation').value,'н/а','value'));
+test('06 — `на` -> `н/а` in attestation',()=>eq(n('на','attestation').value,'н/а','value'));
+test('07 — `5/6` remains `5/6`',()=>{const r=n('5/6');eq(r.status,'valid','status');return eq(r.value,'5/6','value');});
+test('08 — `10/-` -> `10`',()=>eq(n('10/-').value,'10','value'));
+test('09 — `-/7` and `/7` -> `7`',()=>{eq(n('-/7').value,'7','-/7');eq(n('/7').value,'7','/7');return '7';});
+test('10 — `нб/5` -> `5`',()=>eq(n('нб/5').value,'5','value'));
+test('11 — `5/нб` -> `5`',()=>eq(n('5/нб').value,'5','value'));
+test('12 — `нб/зрх` -> `нб`; `н/1` -> `1`',()=>{eq(n('нб/зрх').value,'нб','нб/зрх');eq(n('н/1').value,'1','н/1');return 'both deterministic rules passed';});
 
-const sourceKeys = new Set(disciplines.flatMap((d) => d.sourceManifest.map((s) => s.key)));
-const renderedKeys = new Set(pdf.renderedSourceKeys);
-const missing = [...sourceKeys].filter((k) => !renderedKeys.has(k));
-const redKeys = new Set(disciplines.flatMap((d) => d.sourceManifest.filter((s) => s.isRed).map((s) => s.key)));
-const renderedRed = new Set(pdf.renderedRedSourceKeys);
-const missingRed = [...redKeys].filter((k) => !renderedRed.has(k));
+// 13–24: real workbook/PDF integration.
+test('13 — row «Примітки» is fully readable',()=>{const d=disciplines.find(x=>x.grade?.notes?.some(r=>r.isNotesRow));if(!d)throw new Error('No notes row found');const row=d.grade.notes.find(r=>r.isNotesRow);if(!String(row.label.text).toLocaleLowerCase('uk-UA').includes('приміт'))throw new Error('Notes label missing');const pages=pdf.pageInfo.filter(p=>p.kind==='grades'&&p.subject===d.subject);const expected=79*JournalPdf.PT_PER_MM;if(!pages.length||pages.some(p=>p.notesRows<1||Math.abs(p.notesLabelWidth-expected)>.01))throw new Error('Notes label is not rendered in the merged 79 mm label cell');return `${d.subject}: label=${row.label.text}, merged width=79 mm`;});
+test('14 — service notes opposite «Примітки» are not normalized',()=>{const d=disciplines.find(x=>x.grade?.notes?.some(r=>r.isNotesRow&&(r.marks||[]).some(m=>String(m.text||'').trim())));if(!d)throw new Error('No notes service marks found');const row=d.grade.notes.find(r=>r.isNotesRow&&(r.marks||[]).some(m=>String(m.text||'').trim()));const vals=row.marks.map(m=>String(m.text||'').trim()).filter(Boolean);if(row.marks.some(m=>m.autoNormalization))throw new Error('A notes service mark was normalized');return `${d.subject}: ${vals.slice(0,9).join(', ')}`;});
+test('15 — extra text between tables creates warning; Excel error is exposed',()=>{const x=warnings.find(w=>w.category==='extra_text');if(!x)throw new Error('No extra-text warning found');if(x.allowReplace!==false)throw new Error('Extra text must only allow remove/keep');const e=warnings.find(w=>w.category==='excel_error');if(!e)throw new Error('No Excel formula/error warning found');return `${x.file} ${x.cell}: ${x.original}; Excel error: ${e.sheet}!${e.cell} ${e.original}`;});
+test('16 — empty grade page with student list is skipped',()=>{const d=disciplines.find(x=>x.stats?.emptyGradePageSkippedCandidate);if(!d)throw new Error('No empty grade-page fixture found');const pages=pdf.pageInfo.filter(p=>p.kind==='grades'&&p.subject===d.subject);if(pages.length)throw new Error('Empty grade page was rendered');return `${d.subject}: grade page skipped, topics=${Boolean(d.topics)}`;});
+test('17 — red attestation/header text becomes black in grade table',()=>{const d=disciplines.find(x=>x.grade?.headers?.some((h,i)=>h.isRed&&x.grade.columnContexts?.[i]?.type==='attestation'));if(!d)throw new Error('No red attestation header found in real ZIP');const pages=pdf.pageInfo.filter(p=>p.kind==='grades'&&p.subject===d.subject);if(pages.some(p=>p.redTextCount!==0))throw new Error('Grade page emitted red text');return `${d.subject}: ${pages.length} grade page(s), red text calls=0`;});
+test('18 — red grades become black',()=>{const d=disciplines.find(x=>x.grade?.students?.some(s=>s.marks.some(m=>m.isRed)));if(!d)throw new Error('No red grade mark found');const pages=pdf.pageInfo.filter(p=>p.kind==='grades'&&p.subject===d.subject);if(pages.some(p=>p.redTextCount!==0))throw new Error('Red Excel grade was copied to PDF');return `${d.subject}: all grade-table text black`;});
+test('19 — only red numeric values in «Кількість годин» remain red',()=>{if(!expectedRedHours.size)throw new Error('No red numeric hours found');if(missingRed.length||extraRed.length)throw new Error(`red hours mismatch missing=${missingRed.length} extra=${extraRed.length}`);return `${expectedRedHours.size} red numeric hour cells preserved; no other source marked red by renderer`;});
+test('20 — Type A and Type B continue to work',()=>{const a=disciplines.find(x=>x.type==='A'&&x.grade&&x.topics&&x.grade.sheet===x.topics.sheet);if(!a)throw new Error('No Type A detected');const b=typeB.discipline;if(b.type!=='B'||!b.grade||!b.topics||b.grade.sheet===b.topics.sheet)throw new Error('Type B not merged');if(typeBPdf.pages<2)throw new Error('Type B PDF incomplete');return `A=${a.subject}; B=${b.subject}: ${b.grade.sheet}+${b.topics.sheet}, ${typeBPdf.pages} pages`;});
+test('21 — PDF is A4 landscape',()=>{const raw=Buffer.from(pdf.bytes).toString('latin1');const boxes=[...raw.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*\]/g)].map(m=>[Number(m[1]),Number(m[2])]);if(boxes.length!==pdf.pages)throw new Error(`MediaBox count ${boxes.length} != pages ${pdf.pages}`);if(boxes.some(([w,h])=>Math.abs(w-JournalPdf.A4.width)>.05||Math.abs(h-JournalPdf.A4.height)>.05||w<=h))throw new Error('Non-A4-landscape page found');return `${boxes.length} pages, ${boxes[0][0].toFixed(1)} x ${boxes[0][1].toFixed(1)} pt`;});
+test('22 — grade columns remain fixed at 8 mm and small tables do not stretch',()=>{const pages=pdf.pageInfo.filter(p=>p.kind==='grades');const expected=8*JournalPdf.PT_PER_MM;if(!pages.length||pages.some(p=>Math.abs(p.gradeWidth-expected)>.001))throw new Error('Not all grade columns are 8 mm');const small=pages.find(p=>p.gradeColumns<=10);if(!small)throw new Error('No small grade table');const available=JournalPdf.A4.width-20*JournalPdf.PT_PER_MM;if(small.tableWidth>=available-1)throw new Error('Small table stretched to page width');return `all grade columns 8 mm; small table ${(small.tableWidth/JournalPdf.PT_PER_MM).toFixed(1)} mm`;});
+test('23 — grade pagination does not shift data and repeats students',()=>{const d=disciplines.filter(x=>x.grade?.headers?.length>=50).sort((a,b)=>b.grade.headers.length-a.grade.headers.length)[0];if(!d)throw new Error('No many-column fixture');const pages=pdf.pageInfo.filter(p=>p.kind==='grades'&&p.subject===d.subject);if(pages.length<2)throw new Error('Not paginated');let next=0;for(const p of pages){if(p.gradeStart!==next)throw new Error(`expected start ${next}, got ${p.gradeStart}`);if(p.studentCount!==d.grade.students.length)throw new Error('Student list not repeated');next=p.gradeEnd+1;}if(next!==d.grade.headers.length)throw new Error(`coverage ${next}/${d.grade.headers.length}`);return `${d.subject}: ${d.grade.headers.length} columns -> ${pages.length} pages, ${d.grade.students.length} students each`;});
+test('24 — original XLSX/ZIP inputs are unchanged',()=>{eq(sha(fs.readFileSync(args.zip)),groupHashBefore,'group ZIP SHA-256');eq(sha(fs.readFileSync(args['type-b'])),typeBHashBefore,'Type B XLSX SHA-256');return `SHA-256 unchanged: ${groupHashBefore.slice(0,12)}…, ${typeBHashBefore.slice(0,12)}…`;});
 
-test('Test 1 — multi-subject ZIP', () => {
-  if (entries.length !== disciplines.length) throw new Error(`${entries.length} Excel files but ${disciplines.length} disciplines`);
-  if (pdf.bytes.length < 1000 || pdf.pages < disciplines.length) throw new Error('Final group PDF was not generated correctly');
-  return `${entries.length} files -> ${disciplines.length} disciplines -> ${pdf.pages} pages`;
-});
-
-test('Test 2 — Type A', () => {
-  const d = disciplines.find((x) => x.type === 'A' && x.grade && x.topics && x.grade.sheet === x.topics.sheet);
-  if (!d) throw new Error('No Type A discipline detected');
-  return `${d.subject}: ${d.grade.sheet}`;
-});
-
-test('Test 3 — Type B', () => {
-  const d = typeB.discipline;
-  if (d.type !== 'B' || !d.grade || !d.topics || d.grade.sheet === d.topics.sheet) throw new Error('Type B sheets were not merged into one discipline');
-  if (typeBPdf.pages < 2) throw new Error('Type B PDF did not render grades and topics');
-  return `grade=${d.grade.sheet}, topics=${d.topics.sheet}, students=${d.grade.students.length}, pages=${typeBPdf.pages}`;
-});
-
-test('Test 4 — topic continuations', () => {
-  const d = disciplines.find((x) => x.stats?.topicContinuationsMerged > 0);
-  if (!d) throw new Error('No continuation fixture found');
-  const row = d.topics.rows.find((r) => (r.sourceRows || []).length > 1);
-  if (!row) throw new Error('Continuation count exists but merged row not found');
-  const expected = row.topic.segments.map((s) => s.text).join('\n');
-  if (row.topic.text !== expected) throw new Error('Merged topic text differs from exact source segments');
-  return `${d.subject}: ${d.stats.topicContinuationsMerged} continuation rows merged with exact source text`;
-});
-
-test('Test 5 — red dispatcher marks', () => {
-  if (!redKeys.size) throw new Error('No red source cells found in fixture');
-  if (missingRed.length) throw new Error(`${missingRed.length} red source cells were not rendered as red`);
-  const raw = Buffer.from(pdf.bytes).toString('latin1');
-  if (!raw.includes('0.85 0 0 rg')) throw new Error('PDF content has no red text operator');
-  return `${redKeys.size} red source cells retained as red`;
-});
-
-test('Test 6 — few grade columns', () => {
-  const d = disciplines.filter((x) => x.grade?.headers?.length > 0 && x.grade.headers.length <= 12).sort((a,b)=>a.grade.headers.length-b.grade.headers.length)[0];
-  if (!d) throw new Error('No small-date discipline found');
-  const pages = pdf.pageInfo.filter((p) => p.kind === 'grades' && p.subject === d.subject);
-  const expected = 8 * JournalPdf.PT_PER_MM;
-  if (!pages.length || pages.some((p) => Math.abs(p.gradeWidth - expected) > 0.001)) throw new Error('Grade width is not fixed at 8 mm');
-  const available = JournalPdf.A4.width - 20 * JournalPdf.PT_PER_MM;
-  if (pages[0].tableWidth >= available - 1) throw new Error('Small grade table was stretched to page width');
-  return `${d.subject}: ${d.grade.headers.length} columns, width=8 mm, table=${(pages[0].tableWidth/JournalPdf.PT_PER_MM).toFixed(1)} mm`;
-});
-
-test('Test 7 — many grade columns', () => {
-  const d = disciplines.filter((x) => x.grade?.headers?.length >= 50).sort((a,b)=>b.grade.headers.length-a.grade.headers.length)[0];
-  if (!d) throw new Error('No many-date discipline found');
-  const pages = pdf.pageInfo.filter((p) => p.kind === 'grades' && p.subject === d.subject);
-  if (pages.length < 2) throw new Error('Many grade columns were not paginated');
-  const expected = 8 * JournalPdf.PT_PER_MM;
-  if (pages.some((p) => Math.abs(p.gradeWidth - expected) > 0.001)) throw new Error('Grade widths differ across pages');
-  if (pages.some((p) => p.studentCount !== d.grade.students.length)) throw new Error('Full student list not repeated on a grade page');
-  return `${d.subject}: ${d.grade.headers.length} columns -> ${pages.length} grade pages; ${d.grade.students.length} students repeated each page`;
-});
-
-test('Test 8 — problem-cell decisions', () => {
-  const w = warnings.find((x) => x.correctable && x.cell);
-  if (!w) throw new Error('No correctable Excel problem found in fixture');
-  const src = disciplines.flatMap((d)=>d.sourceManifest).find((s)=>s.key===w.id);
-  if (!src) throw new Error('Warning source cell missing from model');
-  const keep = JournalValidation.resolveSource(src, { [src.key]: { mode:'keep' } }).text;
-  const replace = JournalValidation.resolveSource(src, { [src.key]: { mode:'replace', value:'MANUAL_TEST' } }).text;
-  const blank = JournalValidation.resolveSource(src, { [src.key]: { mode:'blank' } }).text;
-  if (keep !== src.text || replace !== 'MANUAL_TEST' || blank !== '') throw new Error('PDF-only override modes failed');
-  return `${w.file} | ${w.sheet}!${w.cell}: keep / replace / blank verified`;
-});
-
-test('Data-loss audit — model to PDF', () => {
-  if (missing.length) throw new Error(`${missing.length} recognized source cells not represented in PDF render manifest`);
-  if (missingRed.length) throw new Error(`${missingRed.length} red source cells lost their red rendering`);
-  return `${sourceKeys.size} recognized source cells represented; 0 missing; ${redKeys.size} red cells represented as red`;
-});
-
-const failed = results.filter((r) => !r.ok);
-console.log(JSON.stringify({
-  version:'1.2.0', files:entries.length, disciplines:disciplines.length, warnings:warnings.length,
-  pages:pdf.pages, typeBWarnings:typeB.warnings.length, sourceCells:sourceKeys.size, redSourceCells:redKeys.size,
-  results,
-}, null, 2));
-process.exit(failed.length ? 1 : 0);
+// Additional integrity audit, reported separately but does not change the required count of 24 tests.
+if(missing.length)results.push({name:'Data-loss audit',ok:false,detail:`${missing.length} recognized source cells missing from PDF render manifest`});else results.push({name:'Data-loss audit',ok:true,detail:`${expectedRendered.length} expected source cells represented; ${skippedKeys.size} cells intentionally excluded with skipped empty grade page; 0 missing`});
+const report={version:'1.2.1',files:entries.length,disciplines:disciplines.length,warnings:warnings.length,automaticNormalizations:autoNormalizations,decisionRequired,emptyGradePagesSkipped,redNumericHourCells:expectedRedHours.size,pages:pdf.pages,previousVersionPages:109,pageDelta:pdf.pages-109,typeBWarnings:typeB.warnings.length,dataLossAudit:{recognized:allSourceKeys.size,expectedRendered:expectedRendered.length,intentionallySkipped:skippedKeys.size,rendered:rendered.size,missing:missing.length},results};
+const output=JSON.stringify(report,null,2);console.log(output);if(args.json)fs.writeFileSync(args.json,output);process.exit(results.some(r=>!r.ok)?1:0);

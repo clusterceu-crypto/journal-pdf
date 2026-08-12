@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.1 — 2026-08-12
+
+### Added
+- Controlled PDF-only normalization of ordinary grade and attestation values.
+- Explicit rules for `н`, `на`, valid grade pairs and deterministic slash constructions such as `10/-`, `-/7`, `нб/5`, `5/нб`, `нб/зрх`.
+- Grouped **Перевірити нестандартні значення** dialog with remove / keep / replace decisions and per-cell locations.
+- Bulk decision actions for equal values and remove/keep review for text found between `Примітки` and the topics table.
+- Analysis metrics for automatic normalizations and cases requiring a decision.
+- 24-test v1.2.1 regression suite and an additional data-loss audit.
+
+### Changed
+- Grade-table text is always rendered black, regardless of Excel font color.
+- In the topics table, red is retained only for numeric source cells in `Кількість годин` that were red in Excel.
+- `Примітки` receives a merged label area; service annotations in the row are preserved and excluded from grade normalization.
+- Empty grade pages containing only the student list are omitted while other discipline content remains.
+- Technical report and UI version updated to 1.2.1.
+
+### Safety
+- All normalization and manual decisions remain in the PDF model only. Source XLSX/XLSM files are never modified.
+
 ## 1.2.0 — 2026-08-12
 
 ### Changed
