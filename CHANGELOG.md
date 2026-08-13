@@ -1,29 +1,31 @@
 # Changelog
 
-## 1.2.2 — 2026-08-13
+## 1.2.3 — 2026-08-13
 
-### Fixed
-- Unsupported glyphs are now caught by a Tinos font-coverage preflight before final PDF rendering.
-- Font/preflight errors retain file, discipline, worksheet, cell, source font, code point and cell text when provenance is known.
-- Technical reports retain current-session counts instead of resetting analysis statistics after PDF/font errors.
+### Improved
+- Font-symbol review cards immediately show subject, file, worksheet, cell, problem type, source font, code point and occurrence count.
+- Compact context highlights the exact problematic glyph and offers full-cell expansion.
+- Added previous/next/next-unresolved navigation and review filters.
+- Safe grouping now includes source font and context category, preventing cross-font PUA bulk replacement.
 
 ### Added
-- OOXML source-font provenance from cell styles (`<name>`, family, charset, scheme) and rich-text runs (`<rPr>`, `<rFont>`).
-- Dedicated PUA (`U+E000..U+F8FF`) Font / symbol normalization phase.
-- Source-font-specific conservative mapping. There is no global `U+F062 -> β` rule.
-- Review category **Нестандартні символи шрифту** with file/discipline/sheet/cell/font/code-point context and PDF-only replacement controls.
-- PUA audit counters and A-H font/symbol regression cases.
+- Greek Unicode palette `α–ω` with Ukrainian letter names/tooltips and optional textual replacements.
+- Explicit Tinos preflight coverage check for standard lowercase and uppercase Greek letters.
+- Blocking unsupported glyphs disable `Залишити` and explain why replacement/removal is required.
+- Technical-report fields for context, chosen decision, replacement, unsupported/resolved/unresolved counters.
+- v1.2.3 24-case font/UX regression checklist.
 
 ### Safety
-- A PUA value is auto-mapped only when the originating font has an explicit verified mapping; unknown or ambiguous mappings require user review.
-- Existing v1.2.1 grade normalization, layout, color, Type A/Type B, privacy and ZIP-safety behavior remains in force.
+- No global `U+F0xx -> Greek` rules. Automatic PUA mapping remains source-font-specific and verified only.
+- Contextual wording can guide the user but is never sufficient for automatic replacement.
+
+## 1.2.2 — 2026-08-13
+- Added OOXML source-font provenance, font-dependent PUA normalization and Tinos coverage preflight.
+- Preserved analysis statistics and full provenance on PDF/font errors.
 
 ## 1.2.1 — 2026-08-12
 - Added deterministic PDF-only grade/attestation normalization and grouped manual review.
-- Added `Примітки` handling, inter-table text review, empty grade-page omission and black grade-table policy.
-- Kept red only for red numeric service values in topic-table `Кількість годин`.
-- Added 24-test regression suite and source-to-PDF loss audit.
+- Added `Примітки`, inter-table text review, empty grade-page omission and black grade-table policy.
 
 ## 1.2.0 — 2026-08-12
-- Migrated from Python/FastAPI to a browser-only GitHub Pages architecture.
-- Added Type A/Type B content detection, fixed 8 mm grade columns, A4-landscape PDF generation, ZIP safety, Web Worker progress and PDF-only validation decisions.
+- Migrated to browser-only GitHub Pages architecture.
