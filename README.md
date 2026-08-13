@@ -1,24 +1,26 @@
-# Journal PDF v1.2.3
+# Journal PDF v1.2.4
 
-Browser-only GitHub Pages application that converts a ZIP of `.xlsx` / `.xlsm` group journals into one unencrypted A4-landscape PDF. Source Excel files are never rewritten.
+Browser-only GitHub Pages application that converts a ZIP of `.xlsx` / `.xlsm` group journals into one unencrypted A4-landscape PDF. Source Excel files are never rewritten and journal data is processed locally in the browser.
 
-## v1.2.3 — review UX and Greek Unicode
+## v1.2.4 — production font and recovery fixes
 
-The font-symbol review card now exposes **subject, file, worksheet, cell, problem type, source font, code point and occurrence count immediately**. A compact 32-character context window highlights the exact problematic glyph and can expand to the full cell text. Multiple occurrences can be expanded into a per-cell provenance list.
+v1.2.4 fixes the blocking production mismatch found in v1.2.3: Greek preflight called `font.hasCodePoint`, while the deployed `JournalPdf.TrueTypeFont` exposed `glyphFor`. The compatibility layer now derives `hasCodePoint(cp)` from `glyphFor(cp) !== 0` and the preflight helper supports either API without assuming glyph coverage.
 
-Review navigation includes previous/next problem, next unresolved problem and filters for unresolved/all/grades/font symbols/Excel errors/extra text. Grouping is conservative: font-symbol groups include category + code point + source font + context category, so identical PUA values from different fonts are never merged.
+User font-symbol decisions are preserved exactly. Replacements such as `β`, `γ`, `бетта`, `гамма`, or any other manually entered PDF-only text are validated after replacement, not replaced by the original PUA code point.
 
-A Greek palette provides standard Unicode `α–ω` with Ukrainian names/tooltips plus optional textual replacements (`альфа`, `бета`, `гамма`). Standard Greek Unicode and the standard uppercase Greek letters are explicitly checked against Tinos during preflight and do not create PUA warnings. Textual names are never substituted automatically.
+Recoverable PDF/preflight failures no longer strand the UI in a disabled state. Review remains available while decisions are pending; Generate is enabled again when all decisions are resolved; Download is enabled only by a successful `pdfDone`.
 
-`Залишити` is disabled for a blocking unsupported font glyph; the UI explains that the user must replace or remove it. No global PUA-to-Greek mapping was added. Existing v1.2.2 source-font-specific mapping remains conservative.
+Large formatted worksheets are guarded against JavaScript argument-stack overflow during max-row/max-column discovery. All cells remain in the parsed workbook; only the temporary max calculation is made stack-safe, and native Map iteration is restored immediately after parsing.
 
 ## Existing behavior retained
 
-Type A / Type B, fixed 8 mm grade columns, A4 landscape, black grade tables, red only for numeric service hours, `н -> нб`, `н/на -> н/а`, slash normalization, review of `зрх`, `?`, `-`, `.`, notes, extra text, empty grade-page omission, font preflight, ZIP safety and immutable source XLSX/ZIP remain in force.
+Type A / Type B, fixed 8 mm grade columns, A4 landscape, black grade tables, red only for numeric service hours, grade/attestation/slash normalization, review of ambiguous values, `Примітки`, extra-text review, empty grade-page omission, source-font provenance, conservative PUA handling, Greek palette, ZIP safety and immutable source XLSX/ZIP remain in force.
 
 ## Tests
 
-`tests/run-tests.mjs` is the regression suite. `tests/font-v122.mjs` covers v1.2.2 A-H. `tests/font-v123.mjs` contains the v1.2.3 24-case UX/Greek/font checklist and executable helper assertions. Real fixtures remain external.
+`tests/regression-v124.mjs` adds a production-object Greek test using `JournalPdf.TrueTypeFont` with real Tinos data for `α`, `β`, `γ`, `ω`. Release QA also includes replacement-preservation checks and a synthetic 130,000-cell stack-safety parse.
+
+Real journal fixtures remain external and must never be committed.
 
 ## GitHub Pages
 
@@ -26,4 +28,4 @@ Test branch: `develop`. Stable `main` changes only after explicit approval.
 
 Test URL: `https://clusterceu-crypto.github.io/journal-pdf/`
 
-Current version: **Journal PDF v1.2.3**.
+Current version: **Journal PDF v1.2.4**.
